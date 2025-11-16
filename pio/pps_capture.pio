@@ -1,0 +1,42 @@
+;
+; GPS PPS Capture PIO Program
+; Detects GPS PPS rising edges and triggers CPU interrupt for timestamping
+;
+; This program waits for a rising edge on the configured GPIO pin,
+; then triggers an interrupt. The CPU IRQ handler reads the hardware
+; timer to capture a precise timestamp.
+;
+
+.program pps_capture
+
+.wrap_target
+    wait 0 pin 0        ; Wait for pin to be low (idle state)
+    wait 1 pin 0        ; Wait for rising edge (PPS pulse)
+    irq set 0           ; Signal interrupt to CPU immediately
+.wrap
+
+% c-sdk {
+static inline void pps_capture_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = pps_capture_program_get_default_config(offset);
+
+    // Configure the pin as input
+    sm_config_set_in_pins(&c, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+    pio_gpio_init(pio, pin);
+
+    // Set up autopush - not needed since we push explicitly
+    // But we do want to shift ISR right and autopush after 32 bits
+    sm_config_set_in_shift(&c, false, false, 32);
+
+    // Initialize and enable the state machine
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline void pps_capture_program_init_with_irq(PIO pio, uint sm, uint offset, uint pin, uint irq_index) {
+    pps_capture_program_init(pio, sm, offset, pin);
+
+    // Enable IRQ
+    pio_set_irq0_source_enabled(pio, pis_interrupt0 + sm, true);
+}
+%}
