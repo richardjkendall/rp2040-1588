@@ -174,7 +174,7 @@ void gps_init(uart_inst_t *uart_id, uint tx_pin, uint rx_pin, uint pps_pin, PIO 
     irq_set_enabled(pio_irq, true);
     pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
 
-    printf("GPS initialized: UART on pins TX=%d RX=%d, PPS on pin %d\n", tx_pin, rx_pin, pps_pin);
+    printf("GPS ready (TX=%d RX=%d PPS=%d)\n", tx_pin, rx_pin, pps_pin);
 }
 
 bool gps_get_pps(gps_pps_t *pps) {

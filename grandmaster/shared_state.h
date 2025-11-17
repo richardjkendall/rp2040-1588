@@ -28,6 +28,10 @@ typedef struct {
     // Lock event counters (for detecting state changes)
     volatile uint32_t lock_event_count;
     volatile uint32_t unlock_event_count;
+
+    // Disciplined clock value for PTP timestamping (Phase 2b)
+    volatile uint64_t disciplined_time_ns;   // Current disciplined time
+    volatile uint64_t last_update_us;        // When was it last updated
 } core1_stats_t;
 
 // Global shared state (defined in discipline_core.c)

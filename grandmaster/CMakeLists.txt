@@ -2,6 +2,8 @@ add_executable(grandmaster
     main.c
     gps.c
     discipline_core.c
+    wifi_init.c
+    ptp_grandmaster.c
 )
 
 # Generate PIO header from .pio file
@@ -10,6 +12,7 @@ pico_generate_pio_header(grandmaster ${CMAKE_SOURCE_DIR}/pio/pps_capture.pio)
 target_include_directories(grandmaster PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_SOURCE_DIR}/common
+    ${CMAKE_SOURCE_DIR}
 )
 
 target_link_libraries(grandmaster
@@ -19,6 +22,7 @@ target_link_libraries(grandmaster
     hardware_uart
     hardware_timer
     hardware_irq
+    pico_cyw43_arch_lwip_poll
     common
 )
 

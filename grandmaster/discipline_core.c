@@ -46,6 +46,10 @@ void core1_entry() {
         // Update disciplined clock time (apply frequency correction)
         discipline_update_time(&disciplined_clock);
 
+        // Publish disciplined clock for PTP timestamping (Phase 2b)
+        core1_stats.disciplined_time_ns = disciplined_clock.nanoseconds;
+        core1_stats.last_update_us = time_us_64();
+
         // Check for GPS PPS event
         gps_pps_t pps;
         if (gps_get_pps(&pps)) {
