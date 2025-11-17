@@ -27,5 +27,5 @@ target_include_directories(common INTERFACE
 # Add subdirectories for each device
 add_subdirectory(grandmaster)
 add_subdirectory(wifi_test)  # WiFi testing/debugging
-# add_subdirectory(slave)    # Phase 3
+add_subdirectory(slave)      # Phase 3
 # add_subdirectory(monitor)  # Phase 4

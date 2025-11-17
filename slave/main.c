@@ -1,37 +1,20 @@
 /**
- * PTP Grandmaster - Main Program (Core 0)
+ * PTP Slave - Main Program (Core 0)
  *
- * Phase 2b: GPS-Disciplined PTP Grandmaster with WiFi
+ * Phase 3: PTP Slave synchronized to Grandmaster
  *
  * Hardware connections:
- * - GPS PPS: GPIO 2
- * - GPS TX: GPIO 1 (to Pico RX)
- * - GPS RX: GPIO 0 (to Pico TX)
- * - LED Output: GPIO 3
+ * - 100 PPS Output: GPIO 3 (for scope comparison with grandmaster)
  * - WiFi: Built-in CYW43 on Pico W
  */
 
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
-#include "hardware/uart.h"
-#include "hardware/pio.h"
 #include "hardware/clocks.h"
-#include "gps.h"
 #include "shared_state.h"
 #include "wifi_init.h"
-#include "ptp_grandmaster.h"
-
-// Pin definitions
-#define GPS_UART_ID uart0
-#define GPS_TX_PIN 0
-#define GPS_RX_PIN 1
-#define GPS_PPS_PIN 2
-#define LED_OUTPUT_PIN 3  // External LED (GPIO 3) - Pico W onboard LED (25) needs CYW43 driver
-
-// PIO configuration
-#define GPS_PIO pio0
-#define GPS_SM 0
+#include "ptp_slave.h"
 
 // Forward declaration of Core 1 entry point
 void core1_entry();
@@ -41,17 +24,17 @@ int main() {
     stdio_init_all();
 
     // Overclock to 250 MHz for better timing precision
-    // Reduces interrupt latency and WiFi overhead impact on discipline
+    // Matches grandmaster clock speed for consistent performance
     set_sys_clock_khz(250000, true);
 
     // Wait a moment for USB serial to connect
     sleep_ms(2000);
 
-    printf("\n=== PTP Grandmaster - Phase 2b ===\n");
-    printf("GPS-Disciplined PTP Grandmaster with WiFi\n");
+    printf("\n=== PTP Slave - Phase 3 ===\n");
+    printf("PTP Slave synchronized to Grandmaster\n");
     printf("System clock: 250 MHz\n\n");
 
-    // Initialize WiFi (Phase 2b)
+    // Initialize WiFi
     if (!wifi_init_and_connect()) {
         printf("FATAL: WiFi init failed - check wifi_config.h\n");
         while (1) {
@@ -59,23 +42,15 @@ int main() {
         }
     }
 
-    // Initialize PTP Grandmaster (Phase 2b)
-    if (!ptp_grandmaster_init()) {
-        printf("FATAL: PTP init failed\n");
+    // Initialize PTP Slave
+    if (!ptp_slave_init()) {
+        printf("FATAL: PTP slave init failed\n");
         while (1) {
             sleep_ms(1000);
         }
     }
 
-    // Initialize LED output
-    gpio_init(LED_OUTPUT_PIN);
-    gpio_set_dir(LED_OUTPUT_PIN, GPIO_OUT);
-    gpio_put(LED_OUTPUT_PIN, 0);
-
-    // Initialize GPS module
-    gps_init(GPS_UART_ID, GPS_TX_PIN, GPS_RX_PIN, GPS_PPS_PIN, GPS_PIO, GPS_SM);
-
-    // Launch Core 1 for time discipline
+    // Launch Core 1 for clock discipline and 100 PPS generation
     multicore_launch_core1(core1_entry);
 
     // Core 0 main loop
@@ -89,11 +64,8 @@ int main() {
         // Poll WiFi/lwIP stack (required for poll mode)
         wifi_poll();
 
-        // Process GPS NMEA data
-        gps_process();
-
-        // Process PTP grandmaster (send messages at 1 Hz)
-        ptp_grandmaster_process();
+        // Process PTP slave (callback-based, but keep this for future expansion)
+        ptp_slave_process();
 
         uint32_t now_ms = to_ms_since_boot(get_absolute_time());
 
@@ -101,29 +73,23 @@ int main() {
         if (now_ms - last_status_ms >= 10000) {
             last_status_ms = now_ms;
 
-            gps_data_t gps_data;
-            gps_get_data(&gps_data);
-
             char ip_addr[16];
             wifi_get_ip_address(ip_addr, sizeof(ip_addr));
 
-            uint32_t announce_count, sync_count, followup_count;
-            ptp_grandmaster_get_stats(&announce_count, &sync_count, &followup_count);
+            uint32_t sync_count, announce_count;
+            ptp_slave_get_stats(&sync_count, &announce_count);
 
             // Single-line status summary
-            printf("Status: GPS=%s(%dsats) Lock=%s Phase=%lldns Freq=%ldppb WiFi=%s PTP=%lu/%lu/%lu\n",
-                   gps_has_fix() ? "FIX" : "NOFIX",
-                   gps_data.satellites,
+            printf("Status: PTP_RX=%lu/%lu Lock=%s Phase=%lldns Freq=%ldppb WiFi=%s\n",
+                   (unsigned long)sync_count,
+                   (unsigned long)announce_count,
                    core1_stats.locked ? "YES" : "NO",
                    (long long)core1_stats.phase_error_ns,
                    (long)core1_stats.freq_offset_ppb,
-                   wifi_is_connected() ? "OK" : "DOWN",
-                   (unsigned long)announce_count,
-                   (unsigned long)sync_count,
-                   (unsigned long)followup_count);
+                   wifi_is_connected() ? "OK" : "DOWN");
         }
 
-        // Detect and print lock/unlock events (important - keep these)
+        // Detect and print lock/unlock events
         if (core1_stats.lock_event_count != last_lock_event_count) {
             last_lock_event_count = core1_stats.lock_event_count;
             printf("EVENT: Discipline LOCKED (phase=%lld ns, freq=%ld ppb)\n",
@@ -137,11 +103,11 @@ int main() {
                    (long long)core1_stats.phase_error_ns);
         }
 
-        // First PPS event (important - keep this)
-        static bool first_pps_printed = false;
-        if (core1_stats.first_pps_received && !first_pps_printed) {
-            first_pps_printed = true;
-            printf("EVENT: First GPS PPS received\n");
+        // First Sync event
+        static bool first_sync_printed = false;
+        if (core1_stats.first_sync_received && !first_sync_printed) {
+            first_sync_printed = true;
+            printf("EVENT: First PTP Sync received\n");
         }
 
         // Very small delay - WiFi needs frequent polling

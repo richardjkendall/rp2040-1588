@@ -30,7 +30,8 @@ typedef struct {
     volatile uint32_t unlock_event_count;
 
     // Disciplined clock value for PTP timestamping (Phase 2b)
-    volatile uint64_t disciplined_time_ns;   // Current disciplined time
+    volatile uint64_t disciplined_time_ns;   // Current disciplined time (0-999ms cycle)
+    volatile uint64_t continuous_time_ns;    // Continuous PTP timestamp (never resets)
     volatile uint64_t last_update_us;        // When was it last updated
 } core1_stats_t;
 

@@ -166,8 +166,9 @@ static void send_announce_message(void) {
 }
 
 static void send_sync_and_followup(void) {
-    // Read disciplined clock time from Core 1
-    uint64_t timestamp_ns = core1_stats.disciplined_time_ns;
+    // Read continuous PTP timestamp from Core 1
+    // (continuous_time_ns never resets, unlike disciplined_time_ns)
+    uint64_t timestamp_ns = core1_stats.continuous_time_ns;
 
     // Build Sync message with approximate timestamp
     ptp_sync_msg_t sync_msg;
@@ -195,7 +196,7 @@ static void send_sync_and_followup(void) {
     ptp_state.sync_count++;
 
     // Immediately read precise timestamp for Follow_Up
-    uint64_t precise_timestamp_ns = core1_stats.disciplined_time_ns;
+    uint64_t precise_timestamp_ns = core1_stats.continuous_time_ns;
 
     // Build Follow_Up message with precise timestamp
     ptp_follow_up_msg_t followup_msg;

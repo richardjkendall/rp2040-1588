@@ -10,6 +10,9 @@
 #define htons(x) __builtin_bswap16(x)
 #define htonl(x) __builtin_bswap32(x)
 #define htonll(x) __builtin_bswap64(x)
+#define ntohs(x) __builtin_bswap16(x)
+#define ntohl(x) __builtin_bswap32(x)
+#define ntohll(x) __builtin_bswap64(x)
 
 void ptp_init_clock_identity(ptp_clock_identity_t *id, const uint8_t mac[6]) {
     // EUI-64 format: MAC[0:2] + 0xFF + 0xFE + MAC[3:5]
@@ -35,9 +38,10 @@ void ptp_ns_to_timestamp(ptp_timestamp_t *timestamp, uint64_t ns) {
 }
 
 uint64_t ptp_timestamp_to_ns(const ptp_timestamp_t *timestamp) {
-    uint64_t seconds = ((uint64_t)htons(timestamp->seconds_hi) << 32) |
-                       (uint64_t)htonl(timestamp->seconds_lo);
-    uint32_t nanoseconds = htonl(timestamp->nanoseconds);
+    // Convert from network byte order (big-endian) to host (little-endian)
+    uint64_t seconds = ((uint64_t)ntohs(timestamp->seconds_hi) << 32) |
+                       (uint64_t)ntohl(timestamp->seconds_lo);
+    uint32_t nanoseconds = ntohl(timestamp->nanoseconds);
 
     return seconds * 1000000000ULL + nanoseconds;
 }

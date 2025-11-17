@@ -38,6 +38,7 @@ void core1_entry() {
 
     uint64_t next_output_pulse_ns = 0;
     bool first_pulse = true;
+    uint64_t ptp_seconds = 0;  // Continuous PTP timestamp (seconds portion)
 
     // Signal to Core 0 that we're running
     core1_stats.discipline_running = true;
@@ -48,6 +49,9 @@ void core1_entry() {
 
         // Publish disciplined clock for PTP timestamping (Phase 2b)
         core1_stats.disciplined_time_ns = disciplined_clock.nanoseconds;
+
+        // Continuous PTP timestamp = seconds * 1e9 + nanoseconds
+        core1_stats.continuous_time_ns = (ptp_seconds * 1000000000ULL) + disciplined_clock.nanoseconds;
         core1_stats.last_update_us = time_us_64();
 
         // Check for GPS PPS event
@@ -68,6 +72,9 @@ void core1_entry() {
                 core1_stats.phase_error_ns = phase_error;
                 core1_stats.freq_offset_ppb = disciplined_clock.frequency_offset_ppb;
                 core1_stats.locked = disciplined_clock.locked;
+
+                // Increment continuous PTP timestamp seconds counter
+                ptp_seconds++;
 
                 // Reset output pulse timing on each GPS pulse (since clock resets to 0)
                 // Start at 0 to get 100 pulses: 0ms, 10ms, 20ms, ..., 990ms
