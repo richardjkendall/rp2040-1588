@@ -107,11 +107,12 @@ int main() {
             char ip_addr[16];
             wifi_get_ip_address(ip_addr, sizeof(ip_addr));
 
-            uint32_t announce_count, sync_count, followup_count;
-            ptp_grandmaster_get_stats(&announce_count, &sync_count, &followup_count);
+            uint32_t announce_count, sync_count, followup_count, delay_resp_count, active_slaves;
+            ptp_grandmaster_get_stats_extended(&announce_count, &sync_count, &followup_count,
+                                               &delay_resp_count, &active_slaves);
 
             // Single-line status summary
-            printf("Status: GPS=%s(%dsats) Lock=%s Phase=%lldns Freq=%ldppb WiFi=%s PTP=%lu/%lu/%lu\n",
+            printf("Status: GPS=%s(%dsats) Lock=%s Phase=%lldns Freq=%ldppb WiFi=%s PTP=%lu/%lu/%lu/%lu Slaves=%lu\n",
                    gps_has_fix() ? "FIX" : "NOFIX",
                    gps_data.satellites,
                    core1_stats.locked ? "YES" : "NO",
@@ -120,7 +121,9 @@ int main() {
                    wifi_is_connected() ? "OK" : "DOWN",
                    (unsigned long)announce_count,
                    (unsigned long)sync_count,
-                   (unsigned long)followup_count);
+                   (unsigned long)followup_count,
+                   (unsigned long)delay_resp_count,
+                   (unsigned long)active_slaves);
         }
 
         // Detect and print lock/unlock events (important - keep these)

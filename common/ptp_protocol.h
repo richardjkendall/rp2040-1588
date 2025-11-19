@@ -30,7 +30,9 @@
 
 // PTP control field values
 #define PTP_CONTROL_SYNC 0x00
+#define PTP_CONTROL_DELAY_REQ 0x01
 #define PTP_CONTROL_FOLLOW_UP 0x02
+#define PTP_CONTROL_DELAY_RESP 0x03
 #define PTP_CONTROL_OTHER 0x05
 
 // PTP time source (for Announce)
@@ -47,6 +49,8 @@
 #define PTP_ANNOUNCE_LENGTH 64
 #define PTP_SYNC_LENGTH 44
 #define PTP_FOLLOW_UP_LENGTH 44
+#define PTP_DELAY_REQ_LENGTH 44
+#define PTP_DELAY_RESP_LENGTH 54
 
 /**
  * PTP Timestamp (TAI - 10 byte format)
@@ -122,6 +126,25 @@ typedef struct {
 } __attribute__((packed)) ptp_follow_up_msg_t;
 
 /**
+ * PTP Delay_Req Message (44 bytes total)
+ * Sent by slave to request delay measurement
+ */
+typedef struct {
+    ptp_header_t header;
+    ptp_timestamp_t origin_timestamp;  // Not used (set to 0)
+} __attribute__((packed)) ptp_delay_req_msg_t;
+
+/**
+ * PTP Delay_Resp Message (54 bytes total)
+ * Sent by master in response to Delay_Req
+ */
+typedef struct {
+    ptp_header_t header;
+    ptp_timestamp_t receive_timestamp;     // When Delay_Req was received (t4)
+    ptp_port_identity_t requesting_port_identity;  // Which slave this is for
+} __attribute__((packed)) ptp_delay_resp_msg_t;
+
+/**
  * Clock Identity (8 bytes)
  * Typically derived from MAC address
  */
@@ -179,6 +202,36 @@ void ptp_build_follow_up(ptp_follow_up_msg_t *msg,
                          uint8_t domain,
                          uint16_t sequence_id,
                          uint64_t precise_timestamp_ns);
+
+/**
+ * Build PTP Delay_Req message
+ *
+ * @param msg Output message buffer
+ * @param clock_id Clock identity
+ * @param domain PTP domain number
+ * @param sequence_id Sequence number for this message
+ */
+void ptp_build_delay_req(ptp_delay_req_msg_t *msg,
+                         const ptp_clock_identity_t *clock_id,
+                         uint8_t domain,
+                         uint16_t sequence_id);
+
+/**
+ * Build PTP Delay_Resp message
+ *
+ * @param msg Output message buffer
+ * @param clock_id Clock identity (grandmaster's)
+ * @param domain PTP domain number
+ * @param sequence_id Sequence number (from Delay_Req)
+ * @param receive_timestamp_ns When Delay_Req was received (t4)
+ * @param requesting_port_identity Port identity of requesting slave
+ */
+void ptp_build_delay_resp(ptp_delay_resp_msg_t *msg,
+                          const ptp_clock_identity_t *clock_id,
+                          uint8_t domain,
+                          uint16_t sequence_id,
+                          uint64_t receive_timestamp_ns,
+                          const ptp_port_identity_t *requesting_port_identity);
 
 /**
  * Convert nanosecond timestamp to PTP timestamp format

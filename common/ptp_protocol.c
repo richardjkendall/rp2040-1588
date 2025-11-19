@@ -141,3 +141,48 @@ void ptp_build_follow_up(ptp_follow_up_msg_t *msg,
     // Precise origin timestamp
     ptp_ns_to_timestamp(&msg->precise_origin_timestamp, precise_timestamp_ns);
 }
+
+void ptp_build_delay_req(ptp_delay_req_msg_t *msg,
+                         const ptp_clock_identity_t *clock_id,
+                         uint8_t domain,
+                         uint16_t sequence_id) {
+    memset(msg, 0, sizeof(ptp_delay_req_msg_t));
+
+    // Initialize header
+    ptp_init_header(&msg->header,
+                    PTP_MSGTYPE_DELAY_REQ,
+                    PTP_DELAY_REQ_LENGTH,
+                    clock_id,
+                    domain,
+                    sequence_id,
+                    PTP_CONTROL_DELAY_REQ,
+                    0);  // Log message interval (not critical for delay req)
+
+    // Origin timestamp is not used for Delay_Req (set to 0)
+    memset(&msg->origin_timestamp, 0, sizeof(ptp_timestamp_t));
+}
+
+void ptp_build_delay_resp(ptp_delay_resp_msg_t *msg,
+                          const ptp_clock_identity_t *clock_id,
+                          uint8_t domain,
+                          uint16_t sequence_id,
+                          uint64_t receive_timestamp_ns,
+                          const ptp_port_identity_t *requesting_port_identity) {
+    memset(msg, 0, sizeof(ptp_delay_resp_msg_t));
+
+    // Initialize header
+    ptp_init_header(&msg->header,
+                    PTP_MSGTYPE_DELAY_RESP,
+                    PTP_DELAY_RESP_LENGTH,
+                    clock_id,
+                    domain,
+                    sequence_id,
+                    PTP_CONTROL_DELAY_RESP,
+                    0);  // Log message interval
+
+    // Receive timestamp (t4 - when Delay_Req was received)
+    ptp_ns_to_timestamp(&msg->receive_timestamp, receive_timestamp_ns);
+
+    // Copy requesting port identity
+    memcpy(&msg->requesting_port_identity, requesting_port_identity, sizeof(ptp_port_identity_t));
+}

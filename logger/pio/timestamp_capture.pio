@@ -1,0 +1,56 @@
+;
+; Triple-Channel PPS Timestamp Capture using DMA
+;
+; SM0: Timer - continuously decrements and pushes to FIFO
+; SM1-3: Edge detectors - pull timer value on rising edge
+;
+; DMA transfers timer value to all edge detector input FIFOs
+;
+; Resolution: 8ns per tick @ 125 MHz PIO clock
+;
+
+; --- Timer SM (SM0) ---
+; Continuously decrements X and pushes to FIFO (autopush)
+.program timer
+.wrap_target
+loop:
+    mov isr, x          ; Copy counter to ISR
+    push                ; Push to FIFO (autopush enabled, triggers DMA)
+    jmp x--, loop       ; Decrement and loop
+.wrap
+
+
+; --- GPS PPS Capture (SM1) ---
+; Pulls timer value from FIFO when edge detected
+.program gps_pps_capture
+.wrap_target
+    wait 0 pin 0        ; Wait for low
+    wait 1 pin 0        ; Wait for rising edge
+    pull                ; Pull timer value from input FIFO (loaded by DMA)
+    mov isr, osr        ; Move to ISR
+    push                ; Push captured timestamp to output FIFO
+.wrap
+
+
+; --- GM PPS Capture (SM2) ---
+; Pulls timer value from FIFO when edge detected
+.program gm_pps_capture
+.wrap_target
+    wait 0 pin 0        ; Wait for low
+    wait 1 pin 0        ; Wait for rising edge
+    pull                ; Pull timer value from input FIFO (loaded by DMA)
+    mov isr, osr        ; Move to ISR
+    push                ; Push captured timestamp to output FIFO
+.wrap
+
+
+; --- Slave PPS Capture (SM3) ---
+; Pulls timer value from FIFO when edge detected
+.program slave_pps_capture
+.wrap_target
+    wait 0 pin 0        ; Wait for low
+    wait 1 pin 0        ; Wait for rising edge
+    pull                ; Pull timer value from input FIFO (loaded by DMA)
+    mov isr, osr        ; Move to ISR
+    push                ; Push captured timestamp to output FIFO
+.wrap

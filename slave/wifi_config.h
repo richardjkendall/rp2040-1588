@@ -20,4 +20,8 @@
 // WiFi connection timeout
 #define WIFI_CONNECT_TIMEOUT_MS 30000  // 30 seconds
 
+// PTP Grandmaster IP - UPDATE THIS!
+// This is the IP address of the grandmaster that this slave will sync to
+#define PTP_GRANDMASTER_IP "192.168.1.100"  // Grandmaster's IP address
+
 #endif // WIFI_CONFIG_H

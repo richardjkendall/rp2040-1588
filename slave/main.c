@@ -79,13 +79,24 @@ int main() {
             uint32_t sync_count, announce_count;
             ptp_slave_get_stats(&sync_count, &announce_count);
 
-            // Single-line status summary
-            printf("Status: PTP_RX=%lu/%lu Lock=%s Phase=%lldns Freq=%ldppb WiFi=%s\n",
+            int64_t offset_ns, path_delay_ns, pdv_ns;
+            bool offset_valid;
+            ptp_slave_get_timing(&offset_ns, &path_delay_ns, &pdv_ns, &offset_valid);
+
+            uint32_t pdv_rejected = ptp_slave_get_pdv_rejected();
+
+            // Single-line status summary with two-way PTP timing
+            printf("Status: PTP_RX=%lu/%lu Lock=%s PhaseRaw=%lldns PhaseFlt=%lldns Freq=%ldppb PathDelay=%0.2fms PDV=%0.2fms Mode=%s Rejected=%lu WiFi=%s\n",
                    (unsigned long)sync_count,
                    (unsigned long)announce_count,
                    core1_stats.locked ? "YES" : "NO",
+                   (long long)core1_stats.raw_phase_error_ns,
                    (long long)core1_stats.phase_error_ns,
                    (long)core1_stats.freq_offset_ppb,
+                   (double)path_delay_ns / 1000000.0,
+                   (double)pdv_ns / 1000000.0,
+                   offset_valid ? "2WAY" : "1WAY",
+                   (unsigned long)pdv_rejected,
                    wifi_is_connected() ? "OK" : "DOWN");
         }
 

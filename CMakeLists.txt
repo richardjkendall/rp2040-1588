@@ -28,4 +28,5 @@ target_include_directories(common INTERFACE
 add_subdirectory(grandmaster)
 add_subdirectory(wifi_test)  # WiFi testing/debugging
 add_subdirectory(slave)      # Phase 3
+add_subdirectory(logger)     # Phase logger - high-precision timestamp capture
 # add_subdirectory(monitor)  # Phase 4

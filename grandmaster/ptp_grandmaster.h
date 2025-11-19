@@ -39,4 +39,17 @@ void ptp_grandmaster_process(void);
  */
 void ptp_grandmaster_get_stats(uint32_t *announce_count, uint32_t *sync_count, uint32_t *followup_count);
 
+/**
+ * Get extended PTP statistics including slave information
+ *
+ * @param announce_count Output: Number of Announce messages sent
+ * @param sync_count Output: Number of Sync messages sent
+ * @param followup_count Output: Number of Follow_Up messages sent
+ * @param delay_resp_count Output: Number of Delay_Resp messages sent
+ * @param active_slaves Output: Number of currently active slave sessions
+ */
+void ptp_grandmaster_get_stats_extended(uint32_t *announce_count, uint32_t *sync_count,
+                                        uint32_t *followup_count, uint32_t *delay_resp_count,
+                                        uint32_t *active_slaves);
+
 #endif // PTP_GRANDMASTER_H

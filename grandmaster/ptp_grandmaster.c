@@ -24,13 +24,35 @@
 // Message transmission interval (1 second)
 #define PTP_MESSAGE_INTERVAL_MS 1000
 
+// Announce message control (set to 0 to disable for fixed unicast topology)
+// Announce is only needed for BMCA (Best Master Clock Algorithm) and domain discovery
+// For fixed IP unicast setups, it provides no value and wastes bandwidth
+#define ENABLE_ANNOUNCE_MESSAGES 0
+
+// Slave session management
+#define MAX_SLAVES 8
+#define SLAVE_TIMEOUT_MS 30000  // 30 seconds
+
+/**
+ * Slave session tracking
+ * Each slave that sends Delay_Req gets a session
+ */
+typedef struct {
+    bool active;                            // Is this session valid?
+    ptp_port_identity_t port_identity;      // Slave's unique port identity
+    ip_addr_t ip_address;                   // Slave's IP for unicast Delay_Resp
+    uint16_t port;                          // Source port
+    uint32_t last_contact_ms;               // Last Delay_Req received timestamp
+    uint16_t last_delay_req_sequence;       // Last Delay_Req sequence number
+} slave_session_t;
+
 // PTP state
 static struct {
     bool initialized;
 
     // UDP sockets
-    struct udp_pcb *event_pcb;      // For Sync messages (port 319)
-    struct udp_pcb *general_pcb;    // For Announce and Follow_Up (port 320)
+    struct udp_pcb *event_pcb;      // For Sync and Delay_Req (port 319)
+    struct udp_pcb *general_pcb;    // For Announce, Follow_Up, and Delay_Resp (port 320)
 
     // Destination address (multicast or unicast)
     ip_addr_t dest_addr;
@@ -47,11 +69,153 @@ static struct {
     uint32_t announce_count;
     uint32_t sync_count;
     uint32_t followup_count;
+    uint32_t delay_resp_count;
 
     // Timing
     uint32_t last_message_time_ms;
+    uint32_t last_cleanup_ms;
+
+    // Slave sessions
+    slave_session_t slaves[MAX_SLAVES];
 
 } ptp_state = {0};
+
+/**
+ * Find or create a slave session by port identity
+ */
+static slave_session_t* find_or_create_slave(const ptp_port_identity_t *port_id,
+                                             const ip_addr_t *ip_addr,
+                                             uint16_t port) {
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    slave_session_t *free_slot = NULL;
+
+    // First, try to find existing session
+    for (int i = 0; i < MAX_SLAVES; i++) {
+        if (ptp_state.slaves[i].active) {
+            if (memcmp(&ptp_state.slaves[i].port_identity, port_id, sizeof(ptp_port_identity_t)) == 0) {
+                // Found existing session
+                return &ptp_state.slaves[i];
+            }
+        } else if (free_slot == NULL) {
+            // Remember first free slot
+            free_slot = &ptp_state.slaves[i];
+        }
+    }
+
+    // Not found - create new session if we have space
+    if (free_slot != NULL) {
+        free_slot->active = true;
+        memcpy(&free_slot->port_identity, port_id, sizeof(ptp_port_identity_t));
+        free_slot->ip_address = *ip_addr;
+        free_slot->port = port;
+        free_slot->last_contact_ms = now_ms;
+        free_slot->last_delay_req_sequence = 0;
+        return free_slot;
+    }
+
+    // No space available
+    return NULL;
+}
+
+/**
+ * Clean up stale slave sessions (haven't heard from in >30 seconds)
+ */
+static void cleanup_stale_slaves(void) {
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+
+    for (int i = 0; i < MAX_SLAVES; i++) {
+        if (ptp_state.slaves[i].active) {
+            if (now_ms - ptp_state.slaves[i].last_contact_ms > SLAVE_TIMEOUT_MS) {
+                ptp_state.slaves[i].active = false;
+                // Optional: Could log slave disconnect here
+            }
+        }
+    }
+}
+
+/**
+ * Get number of active slaves
+ */
+static uint32_t get_active_slave_count(void) {
+    uint32_t count = 0;
+    for (int i = 0; i < MAX_SLAVES; i++) {
+        if (ptp_state.slaves[i].active) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/**
+ * Send Delay_Resp message to a specific slave
+ */
+static void send_delay_resp(slave_session_t *slave, uint64_t t4_timestamp_ns) {
+    ptp_delay_resp_msg_t msg;
+
+    // Build Delay_Resp message
+    ptp_build_delay_resp(&msg, &ptp_state.clock_id, PTP_DOMAIN,
+                         slave->last_delay_req_sequence, t4_timestamp_ns,
+                         &slave->port_identity);
+
+    // Allocate pbuf for Delay_Resp
+    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, sizeof(msg), PBUF_RAM);
+    if (p == NULL) {
+        printf("ERROR: Failed to allocate pbuf for Delay_Resp\n");
+        return;
+    }
+
+    // Copy message to pbuf
+    memcpy(p->payload, &msg, sizeof(msg));
+
+    // Send Delay_Resp via general messages socket (unicast to this slave's IP, port 320)
+    // Note: Must use PTP_GENERAL_PORT (320), not the source port from Delay_Req
+    err_t err = udp_sendto(ptp_state.general_pcb, p, &slave->ip_address, PTP_GENERAL_PORT);
+    pbuf_free(p);
+
+    if (err != ERR_OK) {
+        printf("ERROR: Failed to send Delay_Resp (err=%d)\n", err);
+        return;
+    }
+
+    ptp_state.delay_resp_count++;
+}
+
+/**
+ * Callback for event messages (Sync, Delay_Req) on port 319
+ */
+static void event_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                                const ip_addr_t *addr, u16_t port) {
+    if (p->len < sizeof(ptp_header_t)) {
+        pbuf_free(p);
+        return;
+    }
+
+    ptp_header_t *header = (ptp_header_t *)p->payload;
+    uint8_t msg_type = header->message_type & 0x0F;
+
+    // Check if this is a Delay_Req message
+    if (msg_type == PTP_MSGTYPE_DELAY_REQ && p->len >= sizeof(ptp_delay_req_msg_t)) {
+        ptp_delay_req_msg_t *delay_req = (ptp_delay_req_msg_t *)p->payload;
+
+        // Record reception timestamp (t4) from Core 1
+        uint64_t t4_ns = core1_stats.continuous_time_ns;
+
+        // Find or create slave session
+        slave_session_t *slave = find_or_create_slave(&delay_req->header.source_port_identity, addr, port);
+
+        if (slave != NULL) {
+            // Update session
+            slave->last_contact_ms = to_ms_since_boot(get_absolute_time());
+            slave->last_delay_req_sequence = ntohs(delay_req->header.sequence_id);
+
+            // Send Delay_Resp with t4 timestamp
+            send_delay_resp(slave, t4_ns);
+        }
+        // else: no space for new slave (silently drop)
+    }
+
+    pbuf_free(p);
+}
 
 bool ptp_grandmaster_init(void) {
     printf("Initializing PTP...\n");
@@ -100,7 +264,10 @@ bool ptp_grandmaster_init(void) {
         return false;
     }
 
-    // Create UDP socket for general messages (Announce, Follow_Up)
+    // Set receive callback for event messages (Delay_Req)
+    udp_recv(ptp_state.event_pcb, event_recv_callback, NULL);
+
+    // Create UDP socket for general messages (Announce, Follow_Up, Delay_Resp)
     ptp_state.general_pcb = udp_new();
     if (ptp_state.general_pcb == NULL) {
         printf("ERROR: Failed to create general UDP socket\n");
@@ -134,6 +301,7 @@ bool ptp_grandmaster_init(void) {
     return true;
 }
 
+#if ENABLE_ANNOUNCE_MESSAGES
 static void send_announce_message(void) {
     ptp_announce_msg_t msg;
 
@@ -164,6 +332,7 @@ static void send_announce_message(void) {
     ptp_state.announce_sequence++;
     ptp_state.announce_count++;
 }
+#endif // ENABLE_ANNOUNCE_MESSAGES
 
 static void send_sync_and_followup(void) {
     // Read continuous PTP timestamp from Core 1
@@ -236,11 +405,19 @@ void ptp_grandmaster_process(void) {
     if (now_ms - ptp_state.last_message_time_ms >= PTP_MESSAGE_INTERVAL_MS) {
         ptp_state.last_message_time_ms = now_ms;
 
-        // Send Announce message
+#if ENABLE_ANNOUNCE_MESSAGES
+        // Send Announce message (disabled for fixed unicast topology)
         send_announce_message();
+#endif
 
         // Send Sync + Follow_Up messages
         send_sync_and_followup();
+    }
+
+    // Clean up stale slave sessions every 10 seconds
+    if (now_ms - ptp_state.last_cleanup_ms >= 10000) {
+        ptp_state.last_cleanup_ms = now_ms;
+        cleanup_stale_slaves();
     }
 }
 
@@ -248,4 +425,14 @@ void ptp_grandmaster_get_stats(uint32_t *announce_count, uint32_t *sync_count, u
     if (announce_count) *announce_count = ptp_state.announce_count;
     if (sync_count) *sync_count = ptp_state.sync_count;
     if (followup_count) *followup_count = ptp_state.followup_count;
+}
+
+void ptp_grandmaster_get_stats_extended(uint32_t *announce_count, uint32_t *sync_count,
+                                        uint32_t *followup_count, uint32_t *delay_resp_count,
+                                        uint32_t *active_slaves) {
+    if (announce_count) *announce_count = ptp_state.announce_count;
+    if (sync_count) *sync_count = ptp_state.sync_count;
+    if (followup_count) *followup_count = ptp_state.followup_count;
+    if (delay_resp_count) *delay_resp_count = ptp_state.delay_resp_count;
+    if (active_slaves) *active_slaves = get_active_slave_count();
 }
