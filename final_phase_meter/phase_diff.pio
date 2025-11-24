@@ -1,0 +1,27 @@
+;
+; Relative Phase Difference Measurement (v3 - No IRQ)
+;
+; This version does not use an explicit 'irq' instruction. The CPU
+; will be configured to raise an interrupt when this SM's RX FIFO
+; is not empty (i.e., after it pushes a result).
+;
+
+.program phase_diff
+
+.wrap_target
+    ; Wait for the "start" signal (pin 0)
+    wait 1 pin 0
+
+    ; Start the down-counter
+    mov x, !null
+
+    ; Wait for the "stop" signal (the jmp pin), counting down every cycle
+loop:
+    jmp pin, found_stop_signal
+    jmp x--, loop
+
+found_stop_signal:
+    ; Push the result
+    mov isr, x
+    push
+.wrap

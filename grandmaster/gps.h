@@ -84,4 +84,11 @@ void gps_process();
  */
 bool gps_has_fix();
 
+/**
+ * Get raw PPS interrupt count for debugging
+ *
+ * @return Number of PPS interrupts received
+ */
+uint32_t gps_get_pps_irq_count();
+
 #endif // GPS_H

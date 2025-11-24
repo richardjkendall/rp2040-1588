@@ -1,6 +1,5 @@
 add_executable(slave
     main.c
-    wifi_init.c
     ptp_slave.c
     discipline_core.c
 )
@@ -15,8 +14,8 @@ target_link_libraries(slave
     pico_stdlib
     pico_multicore
     hardware_gpio
-    pico_cyw43_arch_lwip_poll
     common
+    network
 )
 
 # Enable USB output, disable UART output

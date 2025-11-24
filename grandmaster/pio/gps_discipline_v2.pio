@@ -1,0 +1,120 @@
+; GPS Disciplined Clock - V2 with GPIO Pin Synchronization
+;
+; Eliminates continuous DMA by using GPIO pin for inter-SM communication
+; SM0 only pushes counter when GPS PPS arrives (1 Hz vs 250 MHz)
+;
+; Bus usage: 250 million times less than continuous DMA approach
+; PPS capture precision: <40ns (SM0 responds within ~10 cycles)
+;
+; Architecture:
+; - SM1 detects GPS PPS edge, briefly pulses GPIO 16 (internal trigger)
+; - SM0 detects GPIO 16 high via jmp pin, snapshots counter
+; - GPIO 16 is internal-only, not externally visible
+
+; ============================================================================
+; SM0: Free-Running Counter with Pin-Triggered Push
+; ============================================================================
+; Runs at 250 MHz (no clock divider) for maximum precision
+; Counts DOWN from 0xFFFFFFFF to 0, wraps every ~17 seconds
+; Only pushes to FIFO when trigger pin (GPIO 16) goes high
+
+.program counter_with_pin_trigger
+
+.wrap_target
+loop:
+    jmp x--, check_pin      ; Decrement counter
+    ; X wrapped to 0xFFFFFFFF, continue
+check_pin:
+    jmp pin snapshot        ; If trigger pin is high, take snapshot
+    jmp loop                ; Otherwise keep counting
+snapshot:
+    mov isr, x              ; Snapshot counter value
+    push block              ; Push to FIFO (blocking - wait for CPU)
+    ; Wait for trigger to go low before continuing
+wait_clear:
+    jmp pin wait_clear      ; Wait while pin is still high
+    jmp loop                ; Back to counting
+.wrap
+
+% c-sdk {
+#include "hardware/pio.h"
+
+static inline void counter_with_pin_trigger_program_init(PIO pio, uint sm, uint offset, uint trigger_pin) {
+    pio_sm_config c = counter_with_pin_trigger_program_get_default_config(offset);
+
+    // Run at full CPU speed (250 MHz) for 4ns resolution
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    // Configure JMP pin (trigger pin)
+    sm_config_set_jmp_pin(&c, trigger_pin);
+
+    // No autopush - we push manually when triggered
+    sm_config_set_out_shift(&c, false, false, 32);
+    sm_config_set_in_shift(&c, false, false, 32);
+
+    // Initialize state machine
+    pio_sm_init(pio, sm, offset, &c);
+
+    // Ensure trigger pin is input
+    pio_gpio_init(pio, trigger_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, trigger_pin, 1, false);
+
+    // Initialize X register to 0xFFFFFFFF (start of countdown)
+    pio_sm_exec(pio, sm, pio_encode_mov(pio_x, pio_null) | 0x0008);  // mov x, !null
+
+    // Start state machine
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
+
+
+; ============================================================================
+; SM1: GPS PPS Edge Detector with Pin Signaling
+; ============================================================================
+; Waits for GPS PPS rising edge
+; Briefly pulses trigger pin (GPIO 16) high to signal SM0
+; Triggers CPU IRQ for discipline processing
+
+.program pps_edge_with_pin_signal
+
+.wrap_target
+    wait 0 gpio 2           ; Wait for GPS PPS to be low (ensure clean edge)
+    wait 1 gpio 2           ; Wait for GPS PPS rising edge
+    set pins, 1             ; Set trigger pin high (signals SM0)
+    nop [7]                 ; Hold high for 8 cycles (32ns @ 250 MHz) - guarantees SM0 sees it
+    set pins, 0             ; Set trigger pin low
+    irq wait 1              ; Trigger CPU interrupt (blocking - wait for CPU to handle)
+.wrap
+
+% c-sdk {
+#include "hardware/pio.h"
+#include "hardware/gpio.h"
+
+static inline void pps_edge_with_pin_signal_program_init(PIO pio, uint sm, uint offset, uint pps_pin, uint trigger_pin) {
+    pio_sm_config c = pps_edge_with_pin_signal_program_get_default_config(offset);
+
+    // Run at full CPU speed to minimize latency
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    // Configure SET pins (trigger pin)
+    sm_config_set_set_pins(&c, trigger_pin, 1);
+
+    // No autopush/autopull needed
+    sm_config_set_out_shift(&c, false, false, 32);
+    sm_config_set_in_shift(&c, false, false, 32);
+
+    // Initialize state machine
+    pio_sm_init(pio, sm, offset, &c);
+
+    // Configure trigger pin as output
+    pio_gpio_init(pio, trigger_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, trigger_pin, 1, true);  // Output
+    gpio_put(trigger_pin, 0);  // Ensure starts low
+
+    // Ensure PPS pin is input (managed by GPIO, not SET)
+    // PPS pin is monitored via WAIT instruction, doesn't need PIO GPIO init
+
+    // Start state machine
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

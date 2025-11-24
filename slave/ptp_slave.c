@@ -6,10 +6,10 @@
 #include "ptp_slave.h"
 #include "ptp_protocol.h"
 #include "shared_state.h"
+#include "network_interface.h"
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
-#include "pico/cyw43_arch.h"
 #include "lwip/udp.h"
 
 // PTP ports
@@ -332,7 +332,7 @@ bool ptp_slave_init(void) {
 
     // Get MAC address for clock identity
     uint8_t mac[6];
-    cyw43_hal_get_mac(CYW43_ITF_STA, mac);
+    network_get_mac(mac);
 
     // Initialize clock identity from MAC address
     ptp_init_clock_identity(&ptp_state.clock_id, mac);

@@ -1,0 +1,30 @@
+;
+; Frequency Counter PIO Program
+;
+; Measures the number of clock cycles between two rising edges on a
+; reference signal (pin 0), intended for the 1PPS GPS signal.
+;
+; The result is pushed to the RX FIFO as a single 32-bit word, which
+; is the number of ticks counted by the 'x' register down-counter.
+;
+
+.program frequency_counter
+
+.wrap_target
+    ; Wait for the first rising edge
+    wait 1 pin 0
+    mov x, !null        ; Load X with 0xFFFFFFFF to start counter
+
+    ; Wait for the pin to go low before waiting for the next rising edge
+    wait 0 pin 0
+
+    ; Count down while waiting for the second rising edge
+loop:
+    jmp pin, found_edge   ; If signal is high, jump out
+    jmp x--, loop         ; Otherwise, decrement counter and loop
+
+found_edge:
+    ; Push the result
+    mov isr, x          ; Move final counter value to ISR
+    push                ; Push to RX FIFO for CPU
+.wrap

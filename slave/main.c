@@ -13,19 +13,20 @@
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
 #include "shared_state.h"
-#include "wifi_init.h"
+#include "network_interface.h"
 #include "ptp_slave.h"
 
 // Forward declaration of Core 1 entry point
 void core1_entry();
 
 int main() {
-    // Initialize stdio for debug output
-    stdio_init_all();
-
     // Overclock to 250 MHz for better timing precision
     // Matches grandmaster clock speed for consistent performance
+    // MUST be done before stdio_init_all() to avoid USB timing issues
     set_sys_clock_khz(250000, true);
+
+    // Initialize stdio for debug output (after clock change)
+    stdio_init_all();
 
     // Wait a moment for USB serial to connect
     sleep_ms(2000);
@@ -34,9 +35,9 @@ int main() {
     printf("PTP Slave synchronized to Grandmaster\n");
     printf("System clock: 250 MHz\n\n");
 
-    // Initialize WiFi
-    if (!wifi_init_and_connect()) {
-        printf("FATAL: WiFi init failed - check wifi_config.h\n");
+    // Initialize network (WiFi or Ethernet depending on build)
+    if (!network_init()) {
+        printf("FATAL: Network init failed - check network_config.h\n");
         while (1) {
             sleep_ms(1000);
         }
@@ -61,8 +62,8 @@ int main() {
     printf("System ready. Status every 10s, events shown immediately.\n\n");
 
     while (true) {
-        // Poll WiFi/lwIP stack (required for poll mode)
-        wifi_poll();
+        // Poll network stack (required for poll mode)
+        network_poll();
 
         // Process PTP slave (callback-based, but keep this for future expansion)
         ptp_slave_process();
@@ -74,7 +75,7 @@ int main() {
             last_status_ms = now_ms;
 
             char ip_addr[16];
-            wifi_get_ip_address(ip_addr, sizeof(ip_addr));
+            network_get_ip_str(ip_addr, sizeof(ip_addr));
 
             uint32_t sync_count, announce_count;
             ptp_slave_get_stats(&sync_count, &announce_count);
@@ -97,7 +98,7 @@ int main() {
                    (double)pdv_ns / 1000000.0,
                    offset_valid ? "2WAY" : "1WAY",
                    (unsigned long)pdv_rejected,
-                   wifi_is_connected() ? "OK" : "DOWN");
+                   network_is_connected() ? "OK" : "DOWN");
         }
 
         // Detect and print lock/unlock events

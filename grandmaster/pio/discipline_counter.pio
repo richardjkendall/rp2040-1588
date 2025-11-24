@@ -1,0 +1,42 @@
+; PIO program: 10 MHz free-running counter for GPS discipline
+; Clock: 250 MHz / 25 = 10 MHz (100ns resolution)
+; Continuously outputs counter value via autopush for DMA broadcast
+;
+; Design: X register counts DOWN from 0xFFFFFFFF to 0, wraps naturally
+; At 10 MHz, full 32-bit wrap takes ~429 seconds
+; Software handles wrapping and calculates elapsed ticks
+
+.program discipline_counter
+
+.wrap_target
+loop:
+    mov isr, x                  ; Copy counter to ISR
+    push noblock                ; Push to FIFO (non-blocking, for DMA)
+    jmp x--, loop              ; Decrement X and jump to loop (when X > 0)
+    ; When X == 0, fall through and wrap to start (X becomes 0xFFFFFFFF)
+.wrap
+
+% c-sdk {
+#include "hardware/pio.h"
+
+static inline void discipline_counter_program_init(PIO pio, uint sm, uint offset) {
+    pio_sm_config c = discipline_counter_program_get_default_config(offset);
+
+    // Set clock divider to 25.0 for 10 MHz operation (250 MHz / 25 = 10 MHz)
+    // Gives us 100ns resolution (10 million ticks per second)
+    sm_config_set_clkdiv(&c, 25.0f);
+
+    // Configure autopush: push ISR to FIFO automatically
+    sm_config_set_in_shift(&c, false, true, 32);  // Shift left, autopush at 32 bits
+
+    // Initialize state machine
+    pio_sm_init(pio, sm, offset, &c);
+
+    // Initialize X register to 0xFFFFFFFF (start of countdown)
+    // Execute "mov x, !null" which sets X = ~0 = 0xFFFFFFFF
+    pio_sm_exec(pio, sm, pio_encode_mov(pio_x, pio_null) | 0x0008);  // Set invert bit
+
+    // Start state machine
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

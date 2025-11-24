@@ -1,0 +1,29 @@
+;
+; CPU-Controlled Pulse Generator (v2 - Explicit States)
+;
+; This program generates a precise pulse by actively driving the pin
+; HIGH and LOW for durations provided by the CPU. This is more robust
+; and less ambiguous than assuming a pin's state during a delay.
+;
+; The CPU must push two 32-bit words for each full cycle:
+; 1. The number of cycles to hold the pin HIGH.
+; 2. The number of cycles to hold the pin LOW.
+;
+
+.program pulse_generator
+
+.wrap_target
+    ; --- HIGH Phase ---
+    pull block      ; Get HIGH duration from CPU
+    mov y, osr      ; Use 'y' for the HIGH phase counter
+    set pins, 1     ; Drive output pin HIGH
+high_loop:
+    jmp y--, high_loop
+
+    ; --- LOW Phase ---
+    pull block      ; Get LOW duration from CPU
+    mov x, osr      ; Use 'x' for the LOW phase counter
+    set pins, 0     ; Drive output pin LOW
+low_loop:
+    jmp x--, low_loop
+.wrap

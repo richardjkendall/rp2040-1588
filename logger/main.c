@@ -124,8 +124,8 @@ static void output_csv_measurement(void) {
     printf("%lld,", (long long)phase_measurement.gm_slave_phase_diff_ns);
 
     // Pulse counters
-    printf("%lu,", (unsigned long)timestamp_data.gm_pps_count);
-    printf("%lu,", (unsigned long)timestamp_data.slave_pps_count);
+    printf("%lu,", (unsigned long)phase_measurement.gm_pps_count);
+    printf("%lu,", (unsigned long)phase_measurement.slave_pps_count);
 
     // Sample count
     printf("%lu\n", (unsigned long)phase_measurement.sample_count);
@@ -146,7 +146,7 @@ int main(void) {
     printf("GPS UART initialized on GPIO%d/%d @ %d baud\n",
            GPS_UART_TX_PIN, GPS_UART_RX_PIN, GPS_UART_BAUD);
 
-    // Initialize PIO timestamp capture (4 state machines)
+    // Initialize PIO timestamp capture (3 state machines)
     pio_timestamp_init();
 
     // Launch Core 1 (timestamp processor)
@@ -195,18 +195,7 @@ int main(void) {
 
         // Diagnostic output every 5 seconds (before CSV data starts flowing)
         if (phase_measurement.sample_count == 0 && now_ms - last_diagnostic_ms >= 5000) {
-            printf("# Waiting for PPS signals... GPS_PPS=%lu GM_PPS=%lu Slave_PPS=%lu\n",
-                   (unsigned long)timestamp_data.gps_pps_count,
-                   (unsigned long)timestamp_data.gm_pps_count,
-                   (unsigned long)timestamp_data.slave_pps_count);
-            printf("# IRQ counts: Total=%lu GPS_IRQ=%lu Timer=0x%08lx\n",
-                   (unsigned long)pio_timestamp_get_irq_count(),
-                   (unsigned long)pio_timestamp_get_gps_irq_count(),
-                   (unsigned long)pio_timestamp_get_timer_value());
-            printf("# Timestamps: GPS=0x%08lx GM=0x%08lx Slave=0x%08lx\n",
-                   (unsigned long)timestamp_data.gps_pps_timestamp,
-                   (unsigned long)timestamp_data.gm_pps_timestamp,
-                   (unsigned long)timestamp_data.slave_pps_timestamp);
+            printf("# Waiting for first measurement from Core 1...\n");
             last_diagnostic_ms = now_ms;
         }
 
@@ -214,7 +203,7 @@ int main(void) {
         // Throttle to 1 Hz (every 100th 100 PPS pulse)
         if (phase_measurement.data_valid &&
             phase_measurement.sample_count > last_sample_count &&
-            (timestamp_data.slave_pps_count % 100) == 0) {
+            (phase_measurement.slave_pps_count % 100) == 0) {
 
             output_csv_measurement();
             last_sample_count = phase_measurement.sample_count;
