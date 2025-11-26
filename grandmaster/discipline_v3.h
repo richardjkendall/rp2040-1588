@@ -17,7 +17,13 @@
 bool discipline_init_v3(void);
 
 /**
- * Get disciplined time in microseconds
+ * Get GPS time in nanoseconds (primary function)
+ * Returns absolute GPS time by interpolating between GPS PPS boundaries
+ */
+uint64_t get_gps_time_ns(void);
+
+/**
+ * Get disciplined time in microseconds (legacy compatibility)
  */
 uint64_t get_disciplined_time_us(void);
 

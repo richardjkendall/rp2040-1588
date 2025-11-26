@@ -1,0 +1,29 @@
+; Simple Free-Running Counter for PTP Discipline
+;
+; Counts down at system clock / 3 (83.33 MHz at 250 MHz system clock)
+; Provides 12ns resolution for crystal characterization
+;
+; Used by slave to measure crystal drift against grandmaster's Sync timestamps
+
+.program counter_simple
+.wrap_target
+    mov x, ~null        ; Load 0xFFFFFFFF into X (countdown start)
+counter_loop:
+    jmp x-- counter_loop [2]  ; Decrement X and loop (3 cycles total: jmp=1, delay=2)
+.wrap
+
+% c-sdk {
+static inline void counter_simple_program_init(PIO pio, uint sm, uint offset) {
+    pio_sm_config c = counter_simple_program_get_default_config(offset);
+
+    // Run at full system clock speed (no clock divider)
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    // No GPIO pins used - pure counter
+    // X register can be read manually with pio_sm_get()
+
+    // Initialize and start
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

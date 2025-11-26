@@ -180,6 +180,9 @@ static void send_delay_resp(slave_session_t *slave, uint64_t t4_timestamp_ns) {
     ptp_state.delay_resp_count++;
 }
 
+// Forward declaration for GPS time function
+extern uint64_t get_gps_time_ns(void);
+
 /**
  * Callback for event messages (Sync, Delay_Req) on port 319
  */
@@ -197,8 +200,8 @@ static void event_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     if (msg_type == PTP_MSGTYPE_DELAY_REQ && p->len >= sizeof(ptp_delay_req_msg_t)) {
         ptp_delay_req_msg_t *delay_req = (ptp_delay_req_msg_t *)p->payload;
 
-        // Record reception timestamp (t4) from Core 1
-        uint64_t t4_ns = core1_stats.continuous_time_ns;
+        // Record reception timestamp (t4) - call GPS time directly
+        uint64_t t4_ns = get_gps_time_ns();
 
         // Find or create slave session
         slave_session_t *slave = find_or_create_slave(&delay_req->header.source_port_identity, addr, port);
@@ -335,9 +338,8 @@ static void send_announce_message(void) {
 #endif // ENABLE_ANNOUNCE_MESSAGES
 
 static void send_sync_and_followup(void) {
-    // Read continuous PTP timestamp from Core 1
-    // (continuous_time_ns never resets, unlike disciplined_time_ns)
-    uint64_t timestamp_ns = core1_stats.continuous_time_ns;
+    // Read GPS timestamp for Sync message
+    uint64_t timestamp_ns = get_gps_time_ns();
 
     // Build Sync message with approximate timestamp
     ptp_sync_msg_t sync_msg;
@@ -364,8 +366,8 @@ static void send_sync_and_followup(void) {
 
     ptp_state.sync_count++;
 
-    // Immediately read precise timestamp for Follow_Up
-    uint64_t precise_timestamp_ns = core1_stats.continuous_time_ns;
+    // Immediately read precise GPS timestamp for Follow_Up
+    uint64_t precise_timestamp_ns = get_gps_time_ns();
 
     // Build Follow_Up message with precise timestamp
     ptp_follow_up_msg_t followup_msg;

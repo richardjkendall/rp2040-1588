@@ -186,17 +186,16 @@ void gps_init(uart_inst_t *uart_id, uint tx_pin, uint rx_pin, uint pps_pin, PIO 
     uart_set_format(uart_id, 8, 1, UART_PARITY_NONE);
     uart_set_fifo_enabled(uart_id, true);
 
-    // Initialize PIO for PPS capture
-    uint offset = pio_add_program(pio, &pps_capture_program);
-    pps_capture_program_init(pio, sm, offset, pps_pin);
+    // PPS capture DISABLED - discipline_v3.c handles PPS directly on PIO0
+    // Avoid dual PPS capture which can cause timing conflicts
+    // uint offset = pio_add_program(pio, &pps_capture_program);
+    // pps_capture_program_init(pio, sm, offset, pps_pin);
+    // uint pio_irq = (pio == pio0) ? PIO0_IRQ_0 : PIO1_IRQ_0;
+    // irq_set_exclusive_handler(pio_irq, gps_pps_irq_handler);
+    // irq_set_enabled(pio_irq, true);
+    // pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
 
-    // Set up PIO IRQ handler
-    uint pio_irq = (pio == pio0) ? PIO0_IRQ_0 : PIO1_IRQ_0;
-    irq_set_exclusive_handler(pio_irq, gps_pps_irq_handler);
-    irq_set_enabled(pio_irq, true);
-    pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
-
-    printf("GPS ready (TX=%d RX=%d PPS=%d)\n", tx_pin, rx_pin, pps_pin);
+    printf("GPS ready (TX=%d RX=%d PPS=%d - NMEA only, PPS handled by discipline)\n", tx_pin, rx_pin, pps_pin);
 }
 
 bool gps_get_pps(gps_pps_t *pps) {

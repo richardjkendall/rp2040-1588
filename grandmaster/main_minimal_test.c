@@ -16,6 +16,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
 #include "hardware/pio.h"
@@ -53,23 +54,13 @@ int main() {
     printf("\n=== MINIMAL TEST - GPS Discipline ===\n");
     printf("System clock: 250 MHz\n\n");
 
-    // Initialize debug GPIOs
-    gpio_init(LED_OUTPUT_PIN);
-    gpio_set_dir(LED_OUTPUT_PIN, GPIO_OUT);
-    gpio_put(LED_OUTPUT_PIN, 0);
-
+    // Initialize debug GPIOs (minimal set)
     gpio_init(DEBUG_PPS_PIN);
     gpio_set_dir(DEBUG_PPS_PIN, GPIO_OUT);
     gpio_put(DEBUG_PPS_PIN, 0);
 
-    gpio_init(DEBUG_LOCK_PIN);
-    gpio_set_dir(DEBUG_LOCK_PIN, GPIO_OUT);
-    gpio_put(DEBUG_LOCK_PIN, 0);
-
     printf("Debug GPIOs initialized:\n");
-    printf("  GPIO %d: 100 PPS output\n", LED_OUTPUT_PIN);
-    printf("  GPIO %d: GPS PPS IRQ toggle\n", DEBUG_PPS_PIN);
-    printf("  GPIO %d: Lock status\n\n", DEBUG_LOCK_PIN);
+    printf("  GPIO %d: GPS PPS IRQ toggle (1 Hz)\n\n", DEBUG_PPS_PIN);
 
     // Initialize GPS module (NMEA parsing + PPS on PIO1)
     gps_init(GPS_UART_ID, GPS_TX_PIN, GPS_RX_PIN, GPS_PPS_PIN, GPS_PIO, GPS_SM);
@@ -82,70 +73,47 @@ int main() {
         }
     }
 
-    printf("\n*** ENTERING TEST LOOP WITH STATS ***\n\n");
+    printf("\n*** ULTRA-MINIMAL TEST - ZERO INTERFERENCE ***\n");
+    printf("*** Removed: 100 PPS generation, GPIO updates, tight loop ***\n\n");
     sleep_ms(1000);
 
     uint64_t last_stats_time_us = time_us_64();
     uint32_t last_pps_count = 0;
-    uint32_t last_pulse_count = 0;
-    uint32_t last_out_of_range = 0;
-    uint32_t last_too_late = 0;
 
-    // TEST LOOP - Periodic stats output
+    // ULTRA-MINIMAL LOOP - Only periodic stats, NO continuous processing
     while (true) {
-        // Generate 100 PPS output (GPS-disciplined)
-        discipline_generate_100pps();
-
-        // Update lock status GPIO
-        if (core1_stats.locked) {
-            gpio_put(DEBUG_LOCK_PIN, 1);
-        } else {
-            gpio_put(DEBUG_LOCK_PIN, 0);
-        }
-
-        // Print stats every 5 seconds
+        // Print stats every 10 seconds
         uint64_t now_us = time_us_64();
-        if (now_us - last_stats_time_us >= 5000000) {
+        if (now_us - last_stats_time_us >= 10000000) {
             // Check if we're receiving PPS
             bool pps_active = (core1_stats.pps_count > last_pps_count);
             last_pps_count = core1_stats.pps_count;
 
-            // Get 100 PPS debug stats
-            uint32_t fired, out_of_range, too_early, too_late, guard_blocked;
-            discipline_get_100pps_stats(&fired, &out_of_range, &too_early, &too_late, &guard_blocked);
+            // Get GPS nanosecond counter metrics
+            extern volatile uint64_t gps_ns_counter;
+            extern volatile int32_t crystal_error_ns;
+            extern volatile int64_t interpolation_error_ns;
 
-            // Calculate deltas in last 5 seconds
-            uint32_t pulses_this_interval = fired - last_pulse_count;
-            uint32_t out_of_range_delta = out_of_range - last_out_of_range;
-            uint32_t too_late_delta = too_late - last_too_late;
-            last_pulse_count = fired;
-            last_out_of_range = out_of_range;
-            last_too_late = too_late;
+            uint64_t gps_seconds = gps_ns_counter / 1000000000ULL;
 
-            // Get discipline correction and times
-            int64_t correction_us = discipline_get_correction_us();
-            int64_t disciplined_error_ns = discipline_get_disciplined_error_ns();
+            // Convert crystal error to ppm (parts per million)
+            // crystal_error_ns is error over 1 second (1,000,000,000 ns)
+            // ppm = error / 1e9 * 1e6 = error_ns / 1000
+            double crystal_ppm = (double)crystal_error_ns / 1000.0;
 
-            // Get debug info
-            int64_t elapsed_raw, freq_correction_calc;
-            double freq_ppm;
-            discipline_get_debug_info(&elapsed_raw, &freq_ppm, &freq_correction_calc);
-
-            printf("PPS:%lu PTP_accuracy:%lldns crystal_err:%lldns | freq_ppm:%.3f elapsed:%lldus corr_calc:%lldus | 100PPS:%luHz lock:%s\n",
+            printf("PPS:%lu GPS:%llus crystal_err:%+ldns (%+.3fppm) interp_err:%+lldns lock:%s\n",
                    core1_stats.pps_count,
-                   (long long)disciplined_error_ns,
-                   (long long)core1_stats.phase_error_ns,
-                   freq_ppm,
-                   (long long)elapsed_raw,
-                   (long long)freq_correction_calc,
-                   pulses_this_interval / 5,
+                   (unsigned long long)gps_seconds,
+                   (long)crystal_error_ns,
+                   crystal_ppm,
+                   (long long)interpolation_error_ns,
                    core1_stats.locked ? "YES" : "NO ");
 
             last_stats_time_us = now_us;
         }
 
-        // Small delay to prevent tight loop
-        sleep_us(10);
+        // Sleep to minimize CPU interference (wake every 100ms for stats check)
+        sleep_ms(100);
     }
 
     return 0;

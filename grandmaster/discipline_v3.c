@@ -32,8 +32,9 @@
 // GPS PPS pin
 #define GPS_PPS_PIN 2
 
-// Internal trigger pin (GPIO 16 - connects SM1 to SM0)
-#define TRIGGER_PIN 16
+// Internal trigger pin (GPIO 22 - connects SM1 to SM0)
+// CHANGED from GPIO 16 to avoid conflict with W5500 MISO
+#define TRIGGER_PIN 22
 
 // LED output pin
 #define LED_OUTPUT_PIN 3
@@ -60,44 +61,29 @@ extern uint debug_pps_pin;
 static uint32_t prev_counter_value = 0;
 static bool first_pps = true;
 
-// Discipline state - PI controller for frequency estimate
-static volatile double freq_offset_ppm = 0.0;     // Estimated frequency offset (integral term)
-static volatile uint64_t last_pps_raw_us = 0;     // Raw time at last GPS PPS
+// GPS Nanosecond Counter State
+volatile uint64_t gps_ns_counter = 0;           // Absolute GPS time in nanoseconds
+static volatile uint64_t last_pps_system_us = 0;       // System timer reading at last GPS PPS
+static volatile uint32_t measured_ticks_last_second = EXPECTED_TICKS_PER_SECOND;  // Actual ticks in last GPS second
 static uint32_t lock_sample_count = 0;
 
-// Integral gain for frequency-locked loop
-#define FREQ_KI 0.1  // How quickly to adjust frequency estimate (0.1 = 10% per GPS PPS)
+// Performance metrics (exported for monitoring)
+volatile int32_t crystal_error_ns = 0;          // Crystal error this second (ns)
+volatile int64_t interpolation_error_ns = 0;    // Interpolation accuracy at PPS boundary (ns)
 
-// Disciplined time accuracy measurement
-static volatile int64_t disciplined_error_ns = 0;  // Error in disciplined time at GPS PPS
-
-// Expose frequency offset for monitoring
-int64_t discipline_get_correction_us(void) {
-    // Return current frequency offset in μs/sec
-    return (int64_t)freq_offset_ppm;
+// Get crystal error in nanoseconds (for monitoring)
+int32_t discipline_get_crystal_error_ns(void) {
+    return crystal_error_ns;
 }
 
-// Debug: get detailed compensation info
-void discipline_get_debug_info(int64_t *elapsed_raw, double *freq_ppm, int64_t *freq_correction_calc) {
-    uint64_t raw_us = time_us_64();
-
-    if (last_pps_raw_us == 0) {
-        *elapsed_raw = 0;
-        *freq_ppm = 0.0;
-        *freq_correction_calc = 0;
-        return;
-    }
-
-    *elapsed_raw = (int64_t)(raw_us - last_pps_raw_us);
-    *freq_ppm = freq_offset_ppm;
-
-    double freq_corr = (double)(*elapsed_raw) * freq_offset_ppm / 1000000.0;
-    *freq_correction_calc = (int64_t)freq_corr;
+// Get interpolation error in nanoseconds (for monitoring)
+int64_t discipline_get_interpolation_error_ns(void) {
+    return interpolation_error_ns;
 }
 
-
-int64_t discipline_get_disciplined_error_ns(void) {
-    return disciplined_error_ns;
+// Get GPS nanosecond counter value (for monitoring)
+uint64_t discipline_get_gps_ns(void) {
+    return gps_ns_counter;
 }
 
 // Shared state for reporting
@@ -109,35 +95,46 @@ static bool output_100pps_enabled = false;
 static uint64_t last_pulse_time_us = 0;
 
 /**
- * Get disciplined time in microseconds
- * Uses PI-controlled frequency estimate to compensate for crystal drift
+ * Get GPS time in nanoseconds
+ * Returns absolute GPS time by interpolating between GPS PPS boundaries
+ *
+ * CRITICAL: Placed in SRAM for deterministic execution (no flash cache misses)
  */
-uint64_t get_disciplined_time_us(void) {
-    uint64_t raw_us = time_us_64();
-
-    if (last_pps_raw_us == 0) {
-        // No GPS PPS yet, return raw time
-        return raw_us;
+uint64_t __time_critical_func(get_gps_time_ns)(void) {
+    if (last_pps_system_us == 0) {
+        // No GPS PPS yet, return 0
+        return 0;
     }
 
-    // Calculate how much time has elapsed since last GPS PPS (in raw crystal time)
-    int64_t elapsed_raw_us = (int64_t)(raw_us - last_pps_raw_us);
+    // How far through current second? (in system timer microseconds)
+    uint64_t now_us = time_us_64();
+    uint64_t elapsed_system_us = now_us - last_pps_system_us;
 
-    // Apply frequency compensation to get GPS-accurate elapsed time
-    // freq_offset_ppm > 0 means crystal is fast, so we subtract
-    // freq_offset_ppm < 0 means crystal is slow, so we add (subtract negative)
-    double freq_correction = (double)elapsed_raw_us * freq_offset_ppm / 1000000.0;
-    int64_t elapsed_disciplined_us = elapsed_raw_us - (int64_t)freq_correction;
+    // Scale to GPS nanoseconds using measured tick rate
+    // System timer runs at same crystal rate as PIO counter
+    // scale = expected_ticks / measured_ticks = how to convert crystal time to GPS time
+    double scale = (double)EXPECTED_TICKS_PER_SECOND / (double)measured_ticks_last_second;
+    uint64_t gps_elapsed_ns = (uint64_t)((double)elapsed_system_us * 1000.0 * scale);
 
-    // Disciplined time = GPS PPS time + frequency-corrected elapsed
-    // (GPS PPS time was exactly on a GPS second boundary)
-    return last_pps_raw_us + (uint64_t)elapsed_disciplined_us;
+    // GPS time = last GPS second boundary + scaled elapsed time
+    return gps_ns_counter + gps_elapsed_ns;
+}
+
+// Legacy function for compatibility - returns GPS time in microseconds
+uint64_t __time_critical_func(get_disciplined_time_us)(void) {
+    return get_gps_time_ns() / 1000;
 }
 
 /**
  * PIO IRQ handler - called when GPS PPS edge detected
+ *
+ * CRITICAL: Placed in SRAM for deterministic, low-jitter execution
  */
-static void discipline_pps_irq_handler(void) {
+static void __time_critical_func(discipline_pps_irq_handler)(void) {
+    // *** CRITICAL: Capture system time IMMEDIATELY ***
+    // This is our time reference for GPS PPS - must be first instruction to minimize latency
+    uint64_t pps_system_us = time_us_64();
+
     // Check if PIO0 IRQ 1 triggered (from SM1)
     if (!pio_interrupt_get(DISCIPLINE_PIO, 1)) {
         return;
@@ -146,14 +143,14 @@ static void discipline_pps_irq_handler(void) {
     // Clear interrupt
     pio_interrupt_clear(DISCIPLINE_PIO, 1);
 
-    // Toggle debug GPIO
-    gpio_put(debug_pps_pin, !gpio_get(debug_pps_pin));
+    // REMOVED: GPIO toggle uses spinlocks that can cause contention with Core 1
+    // gpio_put(debug_pps_pin, !gpio_get(debug_pps_pin));
 
     // Read counter value from SM0 FIFO
     // SM0 pushed this value when SM1 signaled via IRQ flag
     // This is the counter value at the EXACT moment of GPS PPS edge
     if (pio_sm_is_rx_fifo_empty(DISCIPLINE_PIO, COUNTER_SM)) {
-        // Should never happen, but guard against it
+        // FIFO empty - should never happen, bail out
         return;
     }
 
@@ -165,13 +162,15 @@ static void discipline_pps_irq_handler(void) {
         first_pps = false;
         core1_stats.first_pps_received = true;
 
-        // Enable 100 PPS output and record timestamp
+        // Initialize GPS counter at second 0
+        gps_ns_counter = 0;
+        last_pps_system_us = pps_system_us;  // Use timestamp captured at IRQ entry
+        measured_ticks_last_second = EXPECTED_TICKS_PER_SECOND;
+
+        // Enable 100 PPS output
         output_100pps_enabled = true;
-        last_pps_raw_us = time_us_64();
-        gps_pps_timestamp_us = last_pps_raw_us;  // First PPS, no correction yet
-        freq_offset_ppm = 0.0;
+        gps_pps_timestamp_us = last_pps_system_us;
         last_pulse_time_us = 0;
-        disciplined_error_ns = 0;
 
         return;
     }
@@ -184,36 +183,39 @@ static void discipline_pps_irq_handler(void) {
         elapsed_ticks = prev_counter_value - counter_at_pps;
     }
 
-    // Calculate phase error
+    // ========================================================================
+    // GPS NANOSECOND COUNTER MODEL
+    // Maintain absolute GPS time, measure performance retrospectively
+    // ========================================================================
+
+    // 1. Calculate crystal error THIS second
     int64_t phase_error_ticks = (int64_t)elapsed_ticks - (int64_t)EXPECTED_TICKS_PER_SECOND;
+    crystal_error_ns = (int32_t)(phase_error_ticks * 12);  // Convert ticks to nanoseconds (12ns/tick)
 
     // Calculate frequency offset in PPB for stats
     double freq_offset_ppb = ((double)phase_error_ticks * 1e9) / (double)EXPECTED_TICKS_PER_SECOND;
 
-    // Use RAW crystal measurement (phase_error_ticks) to update frequency estimate
-    // This is the crystal's actual drift relative to GPS, measured by PIO counter
-    double phase_error_ppm = ((double)phase_error_ticks * 1.0e6) / (double)EXPECTED_TICKS_PER_SECOND;
+    // 2. Measure interpolation error using the timestamp captured at IRQ entry
+    // Calculate what our interpolation would return at pps_system_us (not time_us_64() now)
+    uint64_t elapsed_system_us = pps_system_us - last_pps_system_us;
+    double scale = (double)EXPECTED_TICKS_PER_SECOND / (double)measured_ticks_last_second;
+    uint64_t gps_elapsed_ns = (uint64_t)((double)elapsed_system_us * 1000.0 * scale);
 
-    // Exponential moving average for frequency estimate
-    // Smoothly converges freq_offset_ppm toward measured phase_error_ppm
-    freq_offset_ppm = freq_offset_ppm * (1.0 - FREQ_KI) + phase_error_ppm * FREQ_KI;
+    // GPS time at pps_system_us = last GPS boundary + scaled elapsed
+    uint64_t interpolated_gps_ns = gps_ns_counter + gps_elapsed_ns;
 
-    // Measure disciplined time accuracy:
-    // At GPS PPS, exactly 1 second of GPS time elapsed
-    // How much did disciplined time advance from LAST GPS PPS to THIS GPS PPS?
-    uint64_t this_gps_pps_raw = time_us_64();
-    uint64_t raw_elapsed_us = this_gps_pps_raw - last_pps_raw_us;
+    // Should equal exactly the next second boundary
+    uint64_t expected_gps_ns = gps_ns_counter + 1000000000ULL;
+    interpolation_error_ns = (int64_t)(interpolated_gps_ns - expected_gps_ns);
 
-    // Apply frequency correction to raw elapsed time
-    double freq_corr = (double)raw_elapsed_us * freq_offset_ppm / 1000000.0;
-    int64_t disciplined_elapsed_us = raw_elapsed_us - (int64_t)freq_corr;
+    // 3. Update GPS nanosecond counter - hard sync to GPS second boundary
+    gps_ns_counter += 1000000000ULL;
 
-    // Disciplined time should have advanced by exactly 1,000,000 μs
-    int64_t disciplined_error_us = disciplined_elapsed_us - 1000000;
-    disciplined_error_ns = disciplined_error_us * 1000;
+    // 4. Record system time at this GPS boundary (captured at IRQ entry)
+    last_pps_system_us = pps_system_us;
 
-    // Update raw time at GPS PPS for next cycle
-    last_pps_raw_us = time_us_64();
+    // 5. Store measured ticks for next interpolation
+    measured_ticks_last_second = elapsed_ticks;
 
     // Lock detection
     bool was_locked = core1_stats.locked;
@@ -237,14 +239,14 @@ static void discipline_pps_irq_handler(void) {
     core1_stats.pps_count++;
     core1_stats.phase_error_ns = phase_error_ticks * 12;  // 12ns per tick
     core1_stats.freq_offset_ppb = (int32_t)freq_offset_ppb;
-    core1_stats.last_update_us = time_us_64();
+    core1_stats.last_update_us = pps_system_us;  // Use captured timestamp (avoid second time_us_64() call)
 
     // Update previous counter
     prev_counter_value = counter_at_pps;
 
     // Record GPS PPS timestamp for 100 PPS generation
-    // Use last_pps_raw_us which is exactly at GPS second boundary
-    gps_pps_timestamp_us = last_pps_raw_us;
+    // Use last_pps_system_us which is exactly at GPS second boundary
+    gps_pps_timestamp_us = last_pps_system_us;
 }
 
 /**
@@ -272,10 +274,15 @@ bool discipline_init_v3(void) {
     // Set up PIO IRQ handler
     uint pio_irq = PIO0_IRQ_1;  // Using IRQ 1 (SM1 triggers this)
     irq_set_exclusive_handler(pio_irq, discipline_pps_irq_handler);
+
+    // CRITICAL: Set GPS PPS IRQ to HIGHEST priority (0) so it cannot be blocked
+    // by network/lwIP interrupts. Lower number = higher priority on ARM Cortex-M0+
+    irq_set_priority(pio_irq, 0);
+
     irq_set_enabled(pio_irq, true);
     pio_set_irq1_source_enabled(DISCIPLINE_PIO, pis_interrupt1, true);
 
-    printf("  IRQ handler installed (no DMA - GPIO pin only)\n");
+    printf("  IRQ handler installed (priority 0 - highest)\n");
 
     // Mark system as running
     core1_stats.discipline_running = true;
