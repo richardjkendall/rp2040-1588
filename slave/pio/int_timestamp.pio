@@ -1,0 +1,48 @@
+; Hardware Timestamp Capture for W5500 INT Pin
+;
+; Detects falling edge on INT pin and signals software to read timestamp
+; Software then atomically reads SM0 counter for precise timing
+;
+; Pin mapping:
+; - Input pin 0: W5500 INT (active low)
+;
+; Operation:
+; - Waits for INT to go high (idle state)
+; - Waits for INT to go low (event!)
+; - Pushes marker (0xFFFFFFFF) to FIFO
+; - Software detects marker and immediately reads SM0 counter
+; - Latency: <1µs (much better than polling)
+
+.program int_timestamp
+
+.wrap_target
+    wait 1 pin 0        ; Wait for INT high (idle)
+    wait 0 pin 0        ; Wait for INT low (event!)
+
+    ; Event detected - push marker (0xFFFFFFFF) to signal software
+    mov isr, ~null      ; ISR = 0xFFFFFFFF
+    push noblock        ; Push to FIFO
+.wrap
+
+% c-sdk {
+#include "hardware/gpio.h"
+
+static inline void int_timestamp_program_init(PIO pio, uint sm, uint offset, uint int_pin) {
+    pio_sm_config c = int_timestamp_program_get_default_config(offset);
+
+    // Configure INT pin as input for wait instruction
+    sm_config_set_in_pins(&c, int_pin);
+    pio_gpio_init(pio, int_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, int_pin, 1, false);  // Input
+
+    // Run at full system clock speed
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    // Auto-push disabled (we push manually)
+    sm_config_set_in_shift(&c, false, false, 32);
+
+    // Initialize and start
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

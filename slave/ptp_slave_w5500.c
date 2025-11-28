@@ -46,10 +46,12 @@ static struct {
 
     // Pending Sync (waiting for Follow_Up)
     uint16_t pending_sync_sequence;
-    uint64_t pending_t2_ptp_ns;       // t2 from PTP clock
+    uint64_t pending_t2_ptp_ns;       // t2 from PTP clock (corrected to wire time if HW TS available)
     uint64_t pending_t2_slave_us;     // t2 from system timer (reference)
     uint32_t pending_counter_value;
     int64_t pending_correction_sync_ns;
+    int64_t pending_rx_latency_ns;    // RX latency (HW to SW)
+    bool pending_rx_hw_ts_valid;      // Whether HW timestamp was correlated
     bool sync_pending;
 } ptp_state = {0};
 
@@ -74,15 +76,42 @@ void ptp_slave_w5500_handle_sync(const ptp_sync_msg_t *sync, const udp_packet_t 
     // CRITICAL: Capture timestamps IMMEDIATELY
     // t2 = our PTP clock time when Sync arrived (NOT system timer!)
     extern uint64_t get_ptp_time_ns(void);
+    extern bool find_hw_timestamp_for_rx(uint32_t, uint64_t, uint32_t*, int64_t*);
+
     uint64_t t2_ptp_ns = get_ptp_time_ns();
     uint64_t t2_slave_us = time_us_64();  // Also capture system time for reference
 
-    // Atomic counter snapshot: Pause SM, read X, resume SM (for crystal characterization - disabled)
+    // Atomic counter snapshot: Pause SM, read X, resume SM
     pio_sm_set_enabled(DISCIPLINE_PIO, COUNTER_SM, false);
     pio_sm_exec(DISCIPLINE_PIO, COUNTER_SM, pio_encode_mov(pio_isr, pio_x));
     pio_sm_exec(DISCIPLINE_PIO, COUNTER_SM, pio_encode_push(false, false));
-    uint32_t counter_value = pio_sm_get(DISCIPLINE_PIO, COUNTER_SM);
+    uint32_t counter_sw = pio_sm_get(DISCIPLINE_PIO, COUNTER_SM);
     pio_sm_set_enabled(DISCIPLINE_PIO, COUNTER_SM, true);
+
+    // Try to correlate with hardware timestamp (from W5500 INT pin)
+    uint32_t counter_hw;
+    int64_t rx_latency_ns = 0;
+    bool hw_ts_valid = find_hw_timestamp_for_rx(counter_sw, t2_slave_us,
+                                                 &counter_hw, &rx_latency_ns);
+
+#ifdef DEBUG_RX_CORRELATION
+    // Debug first few RX correlations
+    static uint32_t rx_correlation_attempts = 0;
+    rx_correlation_attempts++;
+    if (rx_correlation_attempts <= 5) {
+        printf("RX CORR: counter_sw=0x%08lX hw_valid=%d", counter_sw, hw_ts_valid);
+        if (hw_ts_valid) {
+            printf(" counter_hw=0x%08lX latency=%lldns\n", counter_hw, (long long)rx_latency_ns);
+        } else {
+            printf(" (no match)\n");
+        }
+    }
+#endif
+
+    // If hardware timestamp found, correct t2 to wire time
+    if (hw_ts_valid && rx_latency_ns > 0 && rx_latency_ns < 1000000) {  // Sanity check < 1ms
+        t2_ptp_ns -= rx_latency_ns;  // Move back to wire time
+    }
 
     // Learn grandmaster from first Sync
     if (!ptp_state.gm_known) {
@@ -103,10 +132,12 @@ void ptp_slave_w5500_handle_sync(const ptp_sync_msg_t *sync, const udp_packet_t 
 
     // Store pending Sync data (waiting for Follow_Up)
     ptp_state.pending_sync_sequence = sync_seq;
-    ptp_state.pending_t2_ptp_ns = t2_ptp_ns;
+    ptp_state.pending_t2_ptp_ns = t2_ptp_ns;  // Already corrected to wire time if HW TS available
     ptp_state.pending_t2_slave_us = t2_slave_us;
-    ptp_state.pending_counter_value = counter_value;
+    ptp_state.pending_counter_value = counter_sw;
     ptp_state.pending_correction_sync_ns = correction_ns;
+    ptp_state.pending_rx_latency_ns = rx_latency_ns;
+    ptp_state.pending_rx_hw_ts_valid = hw_ts_valid;
     ptp_state.sync_pending = true;
 
     ptp_state.sync_count++;
@@ -136,11 +167,13 @@ void ptp_slave_w5500_handle_followup(const ptp_follow_up_msg_t *followup) {
 
     // Pass to discipline module (Core 0)
     ptp_sync_data.t1_master_ns = t1_master_ns;
-    ptp_sync_data.t2_ptp_ns = ptp_state.pending_t2_ptp_ns;
+    ptp_sync_data.t2_ptp_ns = ptp_state.pending_t2_ptp_ns;  // Already corrected to wire time
     ptp_sync_data.t2_slave_us = ptp_state.pending_t2_slave_us;
     ptp_sync_data.correction_sync_ns = total_correction_ns;
     ptp_sync_data.counter_at_sync = ptp_state.pending_counter_value;
     ptp_sync_data.sync_sequence = followup_seq;
+    ptp_sync_data.rx_latency_ns = ptp_state.pending_rx_latency_ns;
+    ptp_sync_data.rx_hw_timestamp_valid = ptp_state.pending_rx_hw_ts_valid;
     ptp_sync_data.sync_followup_ready = true;
 
     ptp_state.sync_pending = false;

@@ -43,6 +43,14 @@ extern ptp_sync_data_t ptp_sync_data;
 // Core synchronization
 volatile bool core0_ready = false;
 
+// W5500 INT pin (from w5500_simple.h)
+#define W5500_PIN_INT 21
+
+// PIO configuration (from ptp_discipline.c)
+#define DISCIPLINE_PIO pio0
+#define COUNTER_SM 0
+#define INT_TIMESTAMP_SM 1
+
 // Convert IP string to uint32 (host byte order)
 static uint32_t ip_str_to_u32(const char *ip_str) {
     uint32_t a, b, c, d;
@@ -76,6 +84,9 @@ void core1_network_entry(void) {
         printf("[Core 1] FATAL: W5500 init failed\n");
         while (1) { sleep_ms(1000); }
     }
+
+    // Enable W5500 interrupts for hardware timestamping
+    w5500_enable_interrupts();
 
     // Initialize Ethernet handler
     eth_init(&net_cfg);
@@ -113,6 +124,20 @@ void core1_network_entry(void) {
             sleep_ms(100);
             continue;
         }
+
+        // Drain hardware timestamp FIFO FIRST (so correlation can find them)
+        extern bool read_int_hardware_timestamp(uint32_t *counter_value);
+        uint32_t temp_counter;
+        while (read_int_hardware_timestamp(&temp_counter)) {
+            // Just drain into buffer - correlation will find them
+        }
+
+        // Clear and log W5500 interrupts (to release INT pin for PIO edge detection)
+        uint8_t ir_flags = w5500_read_clear_interrupts();
+        static uint32_t recv_int_count = 0;
+        static uint32_t sendok_int_count = 0;
+        if (ir_flags & 0x04) recv_int_count++;    // RECV interrupt
+        if (ir_flags & 0x10) sendok_int_count++;  // SENDOK interrupt
 
         // Check for received frames
         uint16_t rx_len;
@@ -166,36 +191,83 @@ void core1_network_entry(void) {
                 gm_mac, gm_ip, tx_buffer);
 
             if (frame_len > 0) {
+                // Capture t3 BEFORE sending (software timestamp)
+                extern uint64_t get_ptp_time_ns(void);
+                extern bool find_hw_timestamp_for_rx(uint32_t, uint64_t, uint32_t*, int64_t*);
+                extern int64_t counter_delta_to_ns(uint32_t, uint32_t);
+
+                uint64_t t3_ptp_sw = get_ptp_time_ns();
+                uint64_t t3_slave_us = time_us_64();
+
+                // Atomically read counter before sending
+                pio_sm_set_enabled(DISCIPLINE_PIO, COUNTER_SM, false);
+                pio_sm_exec(DISCIPLINE_PIO, COUNTER_SM, pio_encode_mov(pio_isr, pio_x));
+                pio_sm_exec(DISCIPLINE_PIO, COUNTER_SM, pio_encode_push(false, false));
+                uint32_t counter_before = pio_sm_get(DISCIPLINE_PIO, COUNTER_SM);
+                pio_sm_set_enabled(DISCIPLINE_PIO, COUNTER_SM, true);
+
+                // Send the frame
                 w5500_send_frame(tx_buffer, frame_len);
 
-                // CRITICAL: Capture t3 AFTER sending frame
-                // This accounts for W5500 SPI transfer + processing latency (~900µs)
-                extern uint64_t get_ptp_time_ns(void);
-                ptp_sync_data.t3_ptp_ns = get_ptp_time_ns();
-                ptp_sync_data.t3_slave_us = time_us_64();
+                // Small delay to let W5500 process and trigger INT
+                sleep_us(100);
+
+                // Try to find hardware timestamp for TX complete
+                // Look in buffer for recent HW timestamp that occurred AFTER our software timestamp
+                // Since counter counts down, HW counter will be SMALLER than our counter_before
+                uint32_t counter_hw;
+                int64_t tx_latency_ns = 0;
+                bool hw_ts_valid = false;
+
+                // Simple approach: assume most recent HW timestamp is our TX event
+                extern bool read_int_hardware_timestamp(uint32_t *counter_value);
+                uint32_t temp_counter;
+                uint32_t latest_hw_counter = counter_before;
+                while (read_int_hardware_timestamp(&temp_counter)) {
+                    // Find the one closest to (but after) our transmission
+                    if (temp_counter < counter_before) {
+                        latest_hw_counter = temp_counter;
+                        hw_ts_valid = true;
+                    }
+                }
+
+                if (hw_ts_valid) {
+                    tx_latency_ns = counter_delta_to_ns(counter_before, latest_hw_counter);
+                    // Sanity check
+                    if (tx_latency_ns > 0 && tx_latency_ns < 1000000) {  // < 1ms
+                        ptp_sync_data.t3_ptp_ns = t3_ptp_sw + tx_latency_ns;  // Move forward to wire time
+                    } else {
+                        ptp_sync_data.t3_ptp_ns = t3_ptp_sw;  // Use software timestamp
+                        hw_ts_valid = false;
+                    }
+                } else {
+                    ptp_sync_data.t3_ptp_ns = t3_ptp_sw;  // Use software timestamp
+                }
+
+                ptp_sync_data.t3_slave_us = t3_slave_us;
+                ptp_sync_data.tx_latency_ns = tx_latency_ns;
+                ptp_sync_data.tx_hw_timestamp_valid = hw_ts_valid;
             }
 
             last_delay_req_time_us = now_us;
         }
 
-        // Print stats every 10 seconds
-        if (now_us - last_stats_time_us >= 10000000) {
+        // Print stats every 30 seconds
+        if (now_us - last_stats_time_us >= 30000000) {
             uint32_t sync_count, followup_count, delay_req_count, delay_resp_count;
             bool gm_known;
             ptp_slave_w5500_get_stats(&sync_count, &followup_count,
                                      &delay_req_count, &delay_resp_count, &gm_known);
 
-            printf("[Core 1] PTP: Sync=%lu FollowUp=%lu DelayReq=%lu DelayResp=%lu GM=%s\n",
-                   sync_count, followup_count, delay_req_count, delay_resp_count,
-                   gm_known ? "YES" : "NO");
-            printf("[Core 0] Discipline: Lock=%s Offset=%+lldns PathDelay=%+lldns FreqOff=%+.3fppb\n",
+            uint32_t outliers = ptp_discipline_get_outliers_rejected();
+            printf("\n=== Stats: Sync=%lu FUp=%lu DReq=%lu DResp=%lu INT_RX=%lu Outliers=%lu ===\n",
+                   sync_count, followup_count, delay_req_count, delay_resp_count, recv_int_count,
+                   outliers);
+            printf("    Lock=%s Off=%+lldns PD=%+lldns FreqOff=%+.1fppb Scale=%.6f\n\n",
                    ptp_stats.locked ? "YES" : "NO",
                    (long long)ptp_stats.offset_from_master_ns,
                    (long long)ptp_stats.mean_path_delay_ns,
-                   ptp_stats.freq_offset_ppb);
-            printf("         Crystal: err=%+lldns (%+.3fppm) scale=%.9f\n\n",
-                   (long long)ptp_stats.crystal_error_ns,
-                   ptp_stats.crystal_ppm,
+                   ptp_stats.freq_offset_ppb,
                    ptp_stats.scale_factor);
 
             last_stats_time_us = now_us;
@@ -240,6 +312,8 @@ int main() {
     printf("[Core 0] Entering PTP discipline loop...\n\n");
 
     // MINIMAL LOOP - Only PTP discipline updates
+    // (Core 1 now handles HW timestamp FIFO draining)
+
     while (true) {
         // Update discipline when new timestamp set available
         ptp_discipline_update();

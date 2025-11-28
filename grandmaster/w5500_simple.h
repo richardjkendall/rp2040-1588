@@ -18,6 +18,7 @@
 #define W5500_PIN_MISO 16
 #define W5500_PIN_CS   17
 #define W5500_PIN_RST  20
+#define W5500_PIN_INT  21  // Interrupt pin (active low)
 
 // Maximum Ethernet frame size
 #define W5500_MAX_FRAME_SIZE 1518
@@ -74,5 +75,19 @@ uint8_t w5500_get_version(void);
  * Dump W5500 status registers for debugging
  */
 void w5500_dump_status(void);
+
+/**
+ * Enable W5500 socket interrupts for hardware timestamping
+ *
+ * Enables RECV and SEND_OK interrupts on Socket 0
+ */
+void w5500_enable_interrupts(void);
+
+/**
+ * Read and clear socket interrupt flags
+ *
+ * @return Socket interrupt register value
+ */
+uint8_t w5500_read_clear_interrupts(void);
 
 #endif // W5500_SIMPLE_H

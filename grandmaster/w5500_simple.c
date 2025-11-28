@@ -52,6 +52,16 @@
 // Socket Status
 #define W5500_STATUS_MACRAW 0x42
 
+// Socket Interrupt Bits (W5500_S0_IR)
+#define W5500_IR_RECV      0x04  // Receive interrupt
+#define W5500_IR_SENDOK    0x10  // Send OK interrupt
+
+// Socket Interrupt Mask Register
+#define W5500_S0_IMR       0x002C  // Socket 0 Interrupt Mask Register
+
+// Common Interrupt Registers
+#define W5500_REG_SIMR     0x0018  // Socket Interrupt Mask Register (which sockets cause INT)
+
 // SPI transfer with CS control
 static void w5500_cs_select(void) {
     gpio_put(W5500_PIN_CS, 0);
@@ -446,4 +456,33 @@ void w5500_dump_status(void) {
     }
 
     printf("=========================\n\n");
+}
+
+/**
+ * Enable W5500 socket interrupts for hardware timestamping
+ */
+void w5500_enable_interrupts(void) {
+    // Enable Socket 0 to assert INT pin (SIMR register)
+    w5500_write_byte(W5500_REG_SIMR, W5500_BSB_COMMON, 0x01);  // Enable Socket 0
+
+    // Enable RECV and SENDOK interrupts on Socket 0 (Sn_IMR register)
+    uint8_t mask = W5500_IR_RECV | W5500_IR_SENDOK;
+    w5500_write_byte(W5500_S0_IMR, W5500_BSB_S0_REG, mask);
+
+    printf("W5500 interrupts enabled (Socket 0: RECV | SENDOK)\n");
+}
+
+/**
+ * Read and clear socket interrupt flags
+ */
+uint8_t w5500_read_clear_interrupts(void) {
+    // Read interrupt register
+    uint8_t ir = w5500_read_byte(W5500_S0_IR, W5500_BSB_S0_REG);
+
+    // Clear interrupts by writing 1s back
+    if (ir != 0) {
+        w5500_write_byte(W5500_S0_IR, W5500_BSB_S0_REG, ir);
+    }
+
+    return ir;
 }

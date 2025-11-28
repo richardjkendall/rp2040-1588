@@ -26,6 +26,10 @@ typedef struct {
     volatile uint16_t sync_sequence;      // Sequence ID
     volatile bool sync_followup_ready;    // Both Sync+Follow_Up received
 
+    // Hardware timestamp correlation for RX
+    volatile int64_t rx_latency_ns;       // RX latency (HW to SW), 0 if no HW timestamp found
+    volatile bool rx_hw_timestamp_valid;  // Whether HW timestamp was correlated
+
     // Delay_Req + Delay_Resp timestamps
     volatile uint64_t t3_ptp_ns;          // Slave TX time (from PTP clock)
     volatile uint64_t t3_slave_us;        // Slave TX time (system timer - for reference)
@@ -33,6 +37,10 @@ typedef struct {
     volatile int64_t correction_delay_resp_ns; // From Delay_Resp header
     volatile uint16_t delay_req_sequence; // Sequence ID
     volatile bool delay_resp_ready;       // Delay_Resp received
+
+    // Hardware timestamp correlation for TX
+    volatile int64_t tx_latency_ns;       // TX latency (SW to HW), 0 if no HW timestamp found
+    volatile bool tx_hw_timestamp_valid;  // Whether HW timestamp was correlated
 } ptp_sync_data_t;
 
 /**

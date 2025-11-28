@@ -63,8 +63,9 @@ target_link_libraries(w5500_ptp_slave
     common          # For ptp_protocol.c
 )
 
-# Generate PIO header for counter
+# Generate PIO headers for counter and INT timestamp
 pico_generate_pio_header(w5500_ptp_slave ${CMAKE_CURRENT_LIST_DIR}/pio/counter_simple.pio)
+pico_generate_pio_header(w5500_ptp_slave ${CMAKE_CURRENT_LIST_DIR}/pio/int_timestamp.pio)
 
 # Enable USB output
 pico_enable_stdio_usb(w5500_ptp_slave 1)
