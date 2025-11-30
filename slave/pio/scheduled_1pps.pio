@@ -1,0 +1,77 @@
+; Scheduled 1PPS Generator
+;
+; Generates a 1 pulse-per-second output aligned to an absolute time reference
+; by counting down from a scheduled tick count.
+;
+; Operation:
+; 1. Software calculates ticks until next second boundary
+; 2. Software pushes tick count to FIFO
+; 3. PIO counts down
+; 4. At zero, generates pulse and waits for next reload
+;
+; Pin mapping:
+; - SET pin 0: 1PPS output
+;
+; Timing:
+; - Runs at system clock / 3 (83.33 MHz for 250 MHz system)
+; - 12ns per tick
+; - Pulse width: 32 ticks = 384ns
+
+.program scheduled_1pps
+
+.wrap_target
+    pull block              ; Wait for tick count until next second (blocking)
+    out x, 32               ; Load countdown value into X
+
+countdown_loop:
+    jmp x-- countdown_loop  ; Count down to zero (1 cycle per iteration)
+
+    ; Generate pulse at second boundary
+    ; TESTING VERSION: 10ms pulse for scope visibility
+    ; 10ms = 10,000,000ns / 12ns = 833,333 ticks
+    ; Use nested loops: outer × inner × delay
+    set pins, 1             ; Pulse high
+    set x, 31               ; Outer: 32 iterations
+pulse_outer:
+    set y, 31               ; Middle: 32 iterations
+pulse_middle:
+    nop [31]                ; Inner: 32 cycles
+    nop [31]                ; 32 cycles
+    nop [31]                ; 32 cycles
+    nop [31]                ; 32 cycles
+    nop [31]                ; 32 cycles
+    nop [31]                ; 32 cycles
+    nop [31]                ; 32 cycles
+    nop [31]                ; 32 cycles (total: 8×32 = 256 cycles per middle loop)
+    jmp y-- pulse_middle    ; 256 × 32 = 8,192 cycles per outer loop
+    jmp x-- pulse_outer     ; 8,192 × 32 = 262,144 cycles total = 3.1ms
+    set pins, 0             ; Pulse low (visible on any scope!)
+.wrap                       ; Back to waiting for next reload
+
+% c-sdk {
+#include "hardware/gpio.h"
+#include "hardware/clocks.h"
+
+static inline void scheduled_1pps_program_init(PIO pio, uint sm, uint offset, uint pps_pin) {
+    pio_sm_config c = scheduled_1pps_program_get_default_config(offset);
+
+    // Configure 1PPS output pin
+    sm_config_set_set_pins(&c, pps_pin, 1);
+    pio_gpio_init(pio, pps_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pps_pin, 1, true);  // Output
+
+    // Run at system clock / 3 (same as counter - 83.33 MHz for 250 MHz system)
+    // This gives us 12ns per tick, matching the counter resolution
+    sm_config_set_clkdiv(&c, 3.0f);
+
+    // Shift OSR to the right, autopull disabled (we manually pull)
+    sm_config_set_out_shift(&c, true, false, 32);
+
+    // Initialize pin to low
+    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << pps_pin));
+
+    // Initialize and start state machine
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

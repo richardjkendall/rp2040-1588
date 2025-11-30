@@ -34,6 +34,7 @@ add_executable(w5500_ptp_slave
     main_w5500_slave.c
     ptp_slave_w5500.c
     ptp_discipline.c
+    pps_scheduler.c
     ../grandmaster/w5500_simple.c
     ../grandmaster/eth_simple.c
 )
@@ -63,9 +64,10 @@ target_link_libraries(w5500_ptp_slave
     common          # For ptp_protocol.c
 )
 
-# Generate PIO headers for counter and INT timestamp
+# Generate PIO headers for counter, INT timestamp, and scheduled 1PPS
 pico_generate_pio_header(w5500_ptp_slave ${CMAKE_CURRENT_LIST_DIR}/pio/counter_simple.pio)
 pico_generate_pio_header(w5500_ptp_slave ${CMAKE_CURRENT_LIST_DIR}/pio/int_timestamp.pio)
+pico_generate_pio_header(w5500_ptp_slave ${CMAKE_CURRENT_LIST_DIR}/pio/scheduled_1pps.pio)
 
 # Enable USB output
 pico_enable_stdio_usb(w5500_ptp_slave 1)

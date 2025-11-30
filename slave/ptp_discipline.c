@@ -50,6 +50,27 @@
 #define KALMAN_ALPHA_LPF 0.1         // Low-pass filter for path delay (10 sec time constant)
 #define KALMAN_OUTLIER_THRESHOLD 1000000  // Reject measurements > 1ms from prediction (3σ)
 
+// EMA alpha values for different time windows (α = 1 - exp(-1/N) where N = window in seconds)
+#define EMA_ALPHA_5MIN  0.00333      // ~5 minute time constant (300 sec)
+#define EMA_ALPHA_15MIN 0.00111      // ~15 minute time constant (900 sec)
+#define EMA_ALPHA_30MIN 0.000556     // ~30 minute time constant (1800 sec)
+
+// Running statistics (Welford's algorithm)
+typedef struct {
+    uint32_t count;
+    double mean;
+    double M2;  // Sum of squared differences from mean
+    double min;
+    double max;
+} running_stats_t;
+
+// EMA (Exponential Moving Average) for variance tracking
+typedef struct {
+    double mean;     // EMA of values
+    double var;      // EMA of variance
+    bool initialized;
+} ema_stats_t;
+
 // Discipline state
 typedef struct {
     // PIO counter tracking (DISABLED - kept for future use)
@@ -87,6 +108,20 @@ typedef struct {
     // Crystal characterization (derived from Kalman frequency estimate)
     double scale_factor;
     int64_t crystal_error_ns;
+
+    // Running statistics for stability analysis
+    running_stats_t offset_stats;
+    running_stats_t path_delay_stats;
+    running_stats_t scale_factor_stats;
+    uint32_t hw_ts_rx_success;
+    uint32_t hw_ts_rx_total;
+    uint32_t hw_ts_tx_success;
+    uint32_t hw_ts_tx_total;
+
+    // EMA statistics for offset (5min, 15min, 30min windows)
+    ema_stats_t offset_ema_5min;
+    ema_stats_t offset_ema_15min;
+    ema_stats_t offset_ema_30min;
 } ptp_discipline_state_t;
 
 static ptp_discipline_state_t state = {0};
@@ -325,6 +360,48 @@ uint32_t ptp_discipline_get_outliers_rejected(void) {
 }
 
 /**
+ * Get current scale factor
+ */
+double ptp_discipline_get_scale_factor(void) {
+    return state.scale_factor;
+}
+
+/**
+ * Get standard deviation from running stats (helper function)
+ */
+static double get_stddev(const running_stats_t *stats) {
+    if (stats->count < 2) return 0.0;
+    return sqrt(stats->M2 / stats->count);
+}
+
+/**
+ * Get running statistics for stability analysis
+ */
+void ptp_discipline_get_stats(double *offset_mean_us, double *offset_stddev_us,
+                              double *offset_min_us, double *offset_max_us,
+                              double *pd_mean_us, double *pd_stddev_us,
+                              double *sf_stddev_ppm,
+                              uint32_t *hw_rx_pct, uint32_t *hw_tx_pct,
+                              double *offset_ema_5m, double *offset_ema_15m, double *offset_ema_30m) {
+    if (offset_mean_us) *offset_mean_us = state.offset_stats.mean;
+    if (offset_stddev_us) *offset_stddev_us = get_stddev(&state.offset_stats);
+    if (offset_min_us) *offset_min_us = state.offset_stats.min;
+    if (offset_max_us) *offset_max_us = state.offset_stats.max;
+    if (pd_mean_us) *pd_mean_us = state.path_delay_stats.mean;
+    if (pd_stddev_us) *pd_stddev_us = get_stddev(&state.path_delay_stats);
+    if (sf_stddev_ppm) *sf_stddev_ppm = get_stddev(&state.scale_factor_stats);
+    if (hw_rx_pct) *hw_rx_pct = state.hw_ts_rx_total > 0 ?
+        (state.hw_ts_rx_success * 100) / state.hw_ts_rx_total : 0;
+    if (hw_tx_pct) *hw_tx_pct = state.hw_ts_tx_total > 0 ?
+        (state.hw_ts_tx_success * 100) / state.hw_ts_tx_total : 0;
+
+    // EMA standard deviations for time windows
+    if (offset_ema_5m) *offset_ema_5m = sqrt(state.offset_ema_5min.var);
+    if (offset_ema_15m) *offset_ema_15m = sqrt(state.offset_ema_15min.var);
+    if (offset_ema_30m) *offset_ema_30m = sqrt(state.offset_ema_30min.var);
+}
+
+/**
  * Get current PTP time (GPS-style interpolation with scale factor)
  *
  * Returns absolute PTP time by interpolating between Sync boundaries using
@@ -456,6 +533,47 @@ static void kalman_update(double measured_offset) {
     state.kalman_P[0][1] = P_new[0][1];
     state.kalman_P[1][0] = P_new[1][0];
     state.kalman_P[1][1] = P_new[1][1];
+}
+
+/**
+ * Update running statistics (Welford's algorithm for numerically stable variance)
+ */
+static void update_stats(running_stats_t *stats, double value) {
+    stats->count++;
+
+    // Update min/max
+    if (stats->count == 1) {
+        stats->min = value;
+        stats->max = value;
+    } else {
+        if (value < stats->min) stats->min = value;
+        if (value > stats->max) stats->max = value;
+    }
+
+    // Welford's online algorithm for mean and variance
+    double delta = value - stats->mean;
+    stats->mean += delta / stats->count;
+    double delta2 = value - stats->mean;
+    stats->M2 += delta * delta2;
+}
+
+/**
+ * Update EMA statistics for variance tracking
+ * Uses exponentially weighted variance calculation
+ */
+static void update_ema_stats(ema_stats_t *ema, double value, double alpha) {
+    if (!ema->initialized) {
+        ema->mean = value;
+        ema->var = 0.0;
+        ema->initialized = true;
+    } else {
+        // Update mean: mean_new = α × value + (1-α) × mean_old
+        double delta = value - ema->mean;
+        ema->mean += alpha * delta;
+
+        // Update variance: var_new = (1-α) × (var_old + α × delta²)
+        ema->var = (1.0 - alpha) * (ema->var + alpha * delta * delta);
+    }
 }
 
 /**
@@ -732,6 +850,23 @@ void ptp_discipline_update(void) {
     // Update counters
     state.sync_count++;
     state.discipline_updates++;
+
+    // Track hardware timestamp success rates
+    state.hw_ts_rx_total++;
+    state.hw_ts_tx_total++;
+    if (ptp_sync_data.rx_hw_timestamp_valid) state.hw_ts_rx_success++;
+    if (ptp_sync_data.tx_hw_timestamp_valid) state.hw_ts_tx_success++;
+
+    // Update running statistics
+    update_stats(&state.offset_stats, (double)state.offset_from_master_ns / 1000.0);  // Convert to µs
+    update_stats(&state.path_delay_stats, (double)state.mean_path_delay_ns / 1000.0); // Convert to µs
+    update_stats(&state.scale_factor_stats, state.scale_factor * 1e6);  // Convert to ppm deviation from 1.0
+
+    // Update EMA statistics for offset (5min, 15min, 30min windows)
+    double offset_us = (double)state.offset_from_master_ns / 1000.0;
+    update_ema_stats(&state.offset_ema_5min, offset_us, EMA_ALPHA_5MIN);
+    update_ema_stats(&state.offset_ema_15min, offset_us, EMA_ALPHA_15MIN);
+    update_ema_stats(&state.offset_ema_30min, offset_us, EMA_ALPHA_30MIN);
 
     // Update shared statistics
     ptp_stats.locked = state.locked;

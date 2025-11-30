@@ -189,7 +189,7 @@ bool w5500_simple_init(const uint8_t mac[6]) {
     printf("Initializing W5500 (simple driver)...\n");
 
     // Initialize SPI
-    spi_init(W5500_SPI_PORT, 5 * 1000 * 1000);  // 5 MHz (safer for initial testing)
+    spi_init(W5500_SPI_PORT, 40 * 1000 * 1000);  // 40 MHz (8x faster, testing vs 20 MHz)
     gpio_set_function(W5500_PIN_SCK, GPIO_FUNC_SPI);
     gpio_set_function(W5500_PIN_MOSI, GPIO_FUNC_SPI);
     gpio_set_function(W5500_PIN_MISO, GPIO_FUNC_SPI);

@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
@@ -21,6 +22,7 @@
 #include "ptp_slave_w5500.h"
 #include "ptp_discipline.h"
 #include "shared_state_slave.h"
+#include "pps_scheduler.h"
 
 // External shared state for timestamp capture
 extern ptp_sync_data_t ptp_sync_data;
@@ -43,13 +45,24 @@ extern ptp_sync_data_t ptp_sync_data;
 // Core synchronization
 volatile bool core0_ready = false;
 
+// Tight lock tracking (shared between cores)
+volatile uint32_t tight_lock_achieved_count = 0;
+volatile uint32_t tight_lock_lost_count = 0;
+volatile uint32_t tight_lock_max_duration_s = 0;
+volatile uint64_t lock_achieved_us = 0;  // Timestamp when tight lock achieved (0 = not locked)
+
 // W5500 INT pin (from w5500_simple.h)
 #define W5500_PIN_INT 21
+
+// 1PPS output pin (for external measurement)
+// Moved to GPIO 15 to avoid crosstalk from W5500 SPI signals (GPIO 16-22)
+#define PPS_OUTPUT_PIN 15
 
 // PIO configuration (from ptp_discipline.c)
 #define DISCIPLINE_PIO pio0
 #define COUNTER_SM 0
 #define INT_TIMESTAMP_SM 1
+#define PPS_SCHEDULER_SM 2
 
 // Convert IP string to uint32 (host byte order)
 static uint32_t ip_str_to_u32(const char *ip_str) {
@@ -260,15 +273,35 @@ void core1_network_entry(void) {
                                      &delay_req_count, &delay_resp_count, &gm_known);
 
             uint32_t outliers = ptp_discipline_get_outliers_rejected();
-            printf("\n=== Stats: Sync=%lu FUp=%lu DReq=%lu DResp=%lu INT_RX=%lu Outliers=%lu ===\n",
+
+            // Get running statistics
+            double off_mean, off_std, off_min, off_max;
+            double pd_mean, pd_std, sf_std;
+            uint32_t hw_rx_pct, hw_tx_pct;
+            double ema_5m, ema_15m, ema_30m;
+            ptp_discipline_get_stats(&off_mean, &off_std, &off_min, &off_max,
+                                    &pd_mean, &pd_std, &sf_std,
+                                    &hw_rx_pct, &hw_tx_pct,
+                                    &ema_5m, &ema_15m, &ema_30m);
+
+            printf("\n=== Stats: Sync=%lu FUp=%lu DReq=%lu DResp=%lu INT_RX=%lu Out=%lu ===\n",
                    sync_count, followup_count, delay_req_count, delay_resp_count, recv_int_count,
                    outliers);
-            printf("    Lock=%s Off=%+lldns PD=%+lldns FreqOff=%+.1fppb Scale=%.6f\n\n",
-                   ptp_stats.locked ? "YES" : "NO",
-                   (long long)ptp_stats.offset_from_master_ns,
-                   (long long)ptp_stats.mean_path_delay_ns,
+            printf("Lock=%c Off=%+.0f±%.0fµs (5/15/30m: %.0f/%.0f/%.0f) PD=%+.0f±%.0fµs Freq=%+.1fppb SF=%.6f±%.1fppm\n",
+                   ptp_stats.locked ? 'Y' : 'N',
+                   off_mean, off_std,
+                   ema_5m, ema_15m, ema_30m,
+                   pd_mean, pd_std,
                    ptp_stats.freq_offset_ppb,
-                   ptp_stats.scale_factor);
+                   ptp_stats.scale_factor, sf_std);
+            // Calculate current tight lock duration
+            uint32_t current_lock_s = (lock_achieved_us > 0) ?
+                (now_us - lock_achieved_us) / 1000000 : 0;
+
+            printf("TightLock: Now=%lus Max=%lus Ach=%lu Lost=%lu | HW_TS: RX=%lu%% TX=%lu%%\n\n",
+                   current_lock_s, tight_lock_max_duration_s,
+                   tight_lock_achieved_count, tight_lock_lost_count,
+                   hw_rx_pct, hw_tx_pct);
 
             last_stats_time_us = now_us;
         }
@@ -302,6 +335,20 @@ int main() {
     }
     printf("[Core 0] PTP discipline ready\n\n");
 
+    // Initialize 1PPS scheduler for external measurement
+    printf("[Core 0] Initializing 1PPS scheduler...\n");
+    pps_scheduler_t pps_sched = {
+        .pio = DISCIPLINE_PIO,
+        .sm = PPS_SCHEDULER_SM,
+        .pin = PPS_OUTPUT_PIN,
+        .get_time_ns = get_ptp_time_ns,
+        .get_scale_factor = ptp_discipline_get_scale_factor
+    };
+    if (!pps_scheduler_init(&pps_sched)) {
+        printf("[Core 0] WARNING: 1PPS scheduler init failed\n");
+    }
+    printf("[Core 0] 1PPS output on GPIO%d\n\n", PPS_OUTPUT_PIN);
+
     // Signal Core 1 that timing is ready
     core0_ready = true;
 
@@ -311,12 +358,66 @@ int main() {
 
     printf("[Core 0] Entering PTP discipline loop...\n\n");
 
-    // MINIMAL LOOP - Only PTP discipline updates
+    // MINIMAL LOOP - Only PTP discipline updates + 1PPS scheduling
     // (Core 1 now handles HW timestamp FIFO draining)
+
+    uint64_t last_pps_schedule_us = 0;
+    bool pps_enabled = false;
 
     while (true) {
         // Update discipline when new timestamp set available
         ptp_discipline_update();
+
+        extern ptp_discipline_stats_t ptp_stats;
+        uint64_t now_us = time_us_64();
+
+        // Track sustained tight lock
+        // Require offset < 200µs continuously for 60 seconds before enabling 1PPS
+        if (ptp_stats.locked && llabs(ptp_stats.offset_from_master_ns) < 200000) {
+            if (lock_achieved_us == 0) {
+                lock_achieved_us = now_us;
+                tight_lock_achieved_count++;
+                printf("[Core 0] Tight lock achieved (offset < 200us), monitoring... [#%lu]\n",
+                       tight_lock_achieved_count);
+            }
+        } else {
+            // Lost tight lock - reset timer
+            if (lock_achieved_us != 0) {
+                uint32_t duration_s = (now_us - lock_achieved_us) / 1000000;
+                if (duration_s > tight_lock_max_duration_s) {
+                    tight_lock_max_duration_s = duration_s;
+                }
+                tight_lock_lost_count++;
+                printf("[Core 0] Tight lock lost (offset=%+lldns) after %lus [#%lu]\n",
+                       (long long)ptp_stats.offset_from_master_ns,
+                       duration_s,
+                       tight_lock_lost_count);
+                lock_achieved_us = 0;
+            }
+        }
+
+        // Only enable 1PPS after 60 seconds of SUSTAINED tight lock
+        // This ensures absolute PTP time has fully settled
+        if (!pps_enabled && lock_achieved_us != 0) {
+            if (now_us - lock_achieved_us >= 60000000) {  // 60 seconds
+                pps_enabled = true;
+                printf("[Core 0] 1PPS enabled (sustained tight lock, offset=%+lldns)\n",
+                       (long long)ptp_stats.offset_from_master_ns);
+            }
+        }
+
+        // Schedule 1PPS only when close to second boundary and FIFO is ready
+        // Get current time to check if we're near a second boundary
+        uint64_t ptp_time_ns = get_ptp_time_ns();
+        uint64_t ns_in_second = ptp_time_ns % 1000000000ULL;
+
+        // Only schedule when we're in the last 100ms of a second (900-1000ms into second)
+        // AND at least 800ms has passed since last schedule (prevents double scheduling)
+        if (pps_enabled && ns_in_second > 900000000ULL &&
+            (now_us - last_pps_schedule_us >= 800000)) {
+            pps_scheduler_schedule_next(&pps_sched);
+            last_pps_schedule_us = now_us;
+        }
 
         // Sleep to minimize CPU interference
         sleep_ms(10);

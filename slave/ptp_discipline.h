@@ -106,4 +106,34 @@ bool find_hw_timestamp_for_rx(uint32_t counter_sw, uint64_t system_us_sw,
  */
 uint32_t ptp_discipline_get_outliers_rejected(void);
 
+/**
+ * Get current scale factor
+ *
+ * @return Crystal scale factor for time interpolation
+ */
+double ptp_discipline_get_scale_factor(void);
+
+/**
+ * Get running statistics for stability analysis
+ *
+ * @param offset_mean_us Output: Mean offset in microseconds
+ * @param offset_stddev_us Output: Offset standard deviation in microseconds
+ * @param offset_min_us Output: Minimum offset seen in microseconds
+ * @param offset_max_us Output: Maximum offset seen in microseconds
+ * @param pd_mean_us Output: Mean path delay in microseconds
+ * @param pd_stddev_us Output: Path delay standard deviation in microseconds
+ * @param sf_stddev_ppm Output: Scale factor standard deviation in ppm
+ * @param hw_rx_pct Output: HW timestamp RX success rate (0-100%)
+ * @param hw_tx_pct Output: HW timestamp TX success rate (0-100%)
+ * @param offset_ema_5m Output: EMA offset std dev over 5 min window in microseconds
+ * @param offset_ema_15m Output: EMA offset std dev over 15 min window in microseconds
+ * @param offset_ema_30m Output: EMA offset std dev over 30 min window in microseconds
+ */
+void ptp_discipline_get_stats(double *offset_mean_us, double *offset_stddev_us,
+                              double *offset_min_us, double *offset_max_us,
+                              double *pd_mean_us, double *pd_stddev_us,
+                              double *sf_stddev_ppm,
+                              uint32_t *hw_rx_pct, uint32_t *hw_tx_pct,
+                              double *offset_ema_5m, double *offset_ema_15m, double *offset_ema_30m);
+
 #endif // PTP_DISCIPLINE_H
