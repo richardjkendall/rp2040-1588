@@ -24,6 +24,7 @@
 #include "gps.h"
 #include "discipline_v3.h"
 #include "shared_state.h"
+#include "pps_scheduler.h"
 
 // Network configuration
 #define MY_MAC          {0x00, 0x08, 0xDC, 0x12, 0x34, 0x01}
@@ -43,8 +44,14 @@
 #define GPS_PPS_PIN     2
 #define GPS_PIO         pio0  // Use PIO0 for GPS discipline
 #define GPS_SM          0
+#define GPS_PPS_CAPTURE_SM 1  // SM1 for PPS edge capture
 #define DEBUG_PPS_PIN   4
 #define DEBUG_LOCK_PIN  5
+
+// 1PPS output pin (for external measurement / phase comparison with slave)
+// Moved to GPIO 15 to avoid crosstalk from W5500 SPI signals (GPIO 16-22)
+#define PPS_OUTPUT_PIN  15
+#define PPS_SCHEDULER_SM 2  // SM2 for scheduled 1PPS generation
 
 // Export debug pins for discipline module
 uint debug_lock_pin = DEBUG_LOCK_PIN;
@@ -52,6 +59,11 @@ uint debug_pps_pin = DEBUG_PPS_PIN;
 
 // Core synchronization
 volatile bool core0_ready = false;
+
+// Scale factor for 1PPS scheduler (GPS is always 1.0 - no crystal correction needed)
+static double gps_get_scale_factor(void) {
+    return 1.0;
+}
 
 // Convert IP string to uint32 (host byte order)
 static uint32_t ip_str_to_u32(const char *ip_str) {
@@ -309,6 +321,20 @@ int main() {
     }
     printf("[Core 0] GPS discipline ready\n\n");
 
+    // Initialize 1PPS scheduler for external measurement
+    printf("[Core 0] Initializing 1PPS scheduler...\n");
+    pps_scheduler_t pps_sched = {
+        .pio = GPS_PIO,
+        .sm = PPS_SCHEDULER_SM,
+        .pin = PPS_OUTPUT_PIN,
+        .get_time_ns = get_gps_time_ns,
+        .get_scale_factor = gps_get_scale_factor  // GPS is always 1.0 (no crystal correction)
+    };
+    if (!pps_scheduler_init(&pps_sched)) {
+        printf("[Core 0] WARNING: 1PPS scheduler init failed\n");
+    }
+    printf("[Core 0] 1PPS output on GPIO%d\n\n", PPS_OUTPUT_PIN);
+
     // Signal Core 1 that timing is ready
     core0_ready = true;
 
@@ -319,10 +345,22 @@ int main() {
     printf("[Core 0] Entering minimal GPS discipline loop...\n\n");
 
     // ULTRA-MINIMAL LOOP (like minimal_test)
-    // Only GPS NMEA processing, NO network, NO printf
+    // GPS NMEA processing + 1PPS scheduling
+    uint64_t last_pps_schedule_us = 0;
     while (true) {
         // Process GPS NMEA sentences
         gps_process();
+
+        // Schedule 1PPS only when close to second boundary
+        uint64_t now_us = time_us_64();
+        uint64_t gps_time_ns = get_gps_time_ns();
+        uint64_t ns_in_second = gps_time_ns % 1000000000ULL;
+
+        // Only schedule when in last 100ms of second AND at least 800ms since last schedule
+        if (ns_in_second > 900000000ULL && (now_us - last_pps_schedule_us >= 800000)) {
+            pps_scheduler_schedule_next(&pps_sched);
+            last_pps_schedule_us = now_us;
+        }
 
         // Sleep to minimize CPU interference
         sleep_ms(100);

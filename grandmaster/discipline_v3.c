@@ -86,6 +86,11 @@ uint64_t discipline_get_gps_ns(void) {
     return gps_ns_counter;
 }
 
+// Get scale factor (measured ticks / expected ticks)
+double discipline_get_scale_factor(void) {
+    return (double)measured_ticks_last_second / (double)EXPECTED_TICKS_PER_SECOND;
+}
+
 // Shared state for reporting
 core1_stats_t core1_stats = {0};
 

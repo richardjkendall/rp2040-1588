@@ -1,0 +1,64 @@
+; Slave to GM Phase Offset Counter
+;
+; Waits for Slave 1PPS rising edge, then counts ticks until GM 1PPS rising edge.
+; This measures the phase offset when Slave arrives first.
+;
+; Pin mapping:
+; - WAIT pin: Slave 1PPS input
+; - JMP pin: GM 1PPS input
+;
+; Operation:
+; 1. Wait for Slave rising edge
+; 2. Count ticks (down from 0xFFFFFFFF)
+; 3. When GM edge arrives, push inverted count to FIFO
+; 4. Repeat
+;
+; Clock: sysclk/3 (83.33 MHz @ 250 MHz system) = 12ns per tick
+
+.program slave_to_gm_counter
+
+.wrap_target
+    wait 1 gpio 11              ; Wait for Slave 1PPS rising edge (GPIO 11)
+    mov x, ~null                ; X = 0xFFFFFFFF (count down from max)
+
+count_loop:
+    jmp x-- test_gm             ; Decrement counter
+test_gm:
+    jmp pin gm_arrived          ; Check if GM edge detected (JMP pin = GPIO 10)
+    jmp count_loop              ; Keep counting
+
+gm_arrived:
+    mov y, ~x                   ; Invert to get positive tick count
+    mov isr, y                  ; Move to ISR
+    push noblock                ; Push to FIFO (non-blocking)
+.wrap
+
+% c-sdk {
+#include "hardware/gpio.h"
+#include "hardware/clocks.h"
+
+static inline void slave_to_gm_counter_program_init(PIO pio, uint sm, uint offset,
+                                                      uint slave_pin, uint gm_pin) {
+    pio_sm_config c = slave_to_gm_counter_program_get_default_config(offset);
+
+    // Configure input pins
+    pio_gpio_init(pio, slave_pin);
+    pio_gpio_init(pio, gm_pin);
+    gpio_set_pulls(slave_pin, false, false);   // No pulls
+    gpio_set_pulls(gm_pin, false, false);      // No pulls
+
+    // WAIT instruction uses the gpio parameter directly
+    // JMP pin uses the configured JMP pin
+    sm_config_set_jmp_pin(&c, gm_pin);
+
+    // Run at sysclk/3 (83.33 MHz for 250 MHz system) = 12ns per tick
+    sm_config_set_clkdiv(&c, 3.0f);
+
+    // Shift ISR to right, autopush disabled (we manually push)
+    sm_config_set_in_shift(&c, true, false, 32);
+
+    // Initialize and start state machine
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

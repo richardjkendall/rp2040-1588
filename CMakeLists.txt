@@ -158,6 +158,7 @@ endif()
 add_subdirectory(grandmaster)
 add_subdirectory(slave)
 add_subdirectory(logger)
+add_subdirectory(measurement)
 add_subdirectory(final_phase_meter)
 
 # WiFi test only makes sense for WiFi builds

@@ -58,4 +58,10 @@ int64_t discipline_get_disciplined_error_ns(void);
  */
 void discipline_get_debug_info(int64_t *elapsed_raw, double *freq_ppm, int64_t *freq_correction_calc);
 
+/**
+ * Get scale factor (measured ticks / expected ticks)
+ * Used for converting PIO tick counts to real time
+ */
+double discipline_get_scale_factor(void);
+
 #endif // DISCIPLINE_V3_H

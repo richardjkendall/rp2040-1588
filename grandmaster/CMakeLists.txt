@@ -182,6 +182,7 @@ add_executable(w5500_dual_core
     eth_simple.c
     gps.c
     discipline_v3.c
+    pps_scheduler.c
 )
 
 target_include_directories(w5500_dual_core PRIVATE
@@ -210,9 +211,10 @@ target_link_libraries(w5500_dual_core
     common          # For ptp_protocol.c
 )
 
-# Generate PIO headers for GPS discipline
+# Generate PIO headers for GPS discipline and 1PPS output
 pico_generate_pio_header(w5500_dual_core ${CMAKE_CURRENT_LIST_DIR}/pio/gps_discipline_v2.pio)
 pico_generate_pio_header(w5500_dual_core ${CMAKE_SOURCE_DIR}/pio/pps_capture.pio)
+pico_generate_pio_header(w5500_dual_core ${CMAKE_CURRENT_LIST_DIR}/pio/scheduled_1pps.pio)
 
 # Enable USB output
 pico_enable_stdio_usb(w5500_dual_core 1)
