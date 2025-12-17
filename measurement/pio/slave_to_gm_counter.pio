@@ -9,17 +9,20 @@
 ;
 ; Operation:
 ; 1. Wait for Slave rising edge
-; 2. Count ticks (down from 0xFFFFFFFF)
-; 3. When GM edge arrives, push inverted count to FIFO
-; 4. Repeat
+; 2. Ensure GM pin is LOW (wait for previous pulse to end)
+; 3. Count ticks (down from 0xFFFFFFFF)
+; 4. When GM edge arrives, push inverted count to FIFO
+; 5. Repeat
 ;
-; Clock: sysclk/3 (83.33 MHz @ 250 MHz system) = 12ns per tick
+; Clock: sysclk/3 (83.33 MHz @ 250 MHz system) = 12ns per PIO cycle
+; Loop overhead: 3 cycles per iteration = 36ns per tick count
 
 .program slave_to_gm_counter
 
 .wrap_target
     wait 1 gpio 11              ; Wait for Slave 1PPS rising edge (GPIO 11)
     mov x, ~null                ; X = 0xFFFFFFFF (count down from max)
+    jmp pin done_immediately    ; If GM already HIGH, count is ~0 (wrong interval)
 
 count_loop:
     jmp x-- test_gm             ; Decrement counter
@@ -28,6 +31,7 @@ test_gm:
     jmp count_loop              ; Keep counting
 
 gm_arrived:
+done_immediately:
     mov y, ~x                   ; Invert to get positive tick count
     mov isr, y                  ; Move to ISR
     push noblock                ; Push to FIFO (non-blocking)

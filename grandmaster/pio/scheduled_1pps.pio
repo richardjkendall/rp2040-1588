@@ -27,25 +27,14 @@ countdown_loop:
     jmp x-- countdown_loop  ; Count down to zero (1 cycle per iteration)
 
     ; Generate pulse at second boundary
-    ; TESTING VERSION: 10ms pulse for scope visibility
-    ; 10ms = 10,000,000ns / 12ns = 833,333 ticks
-    ; Use nested loops: outer × inner × delay
+    ; 10µs pulse width - guarantees non-overlap for offsets > 10µs
+    ; 10µs = 10,000ns / 12ns = 833 cycles
     set pins, 1             ; Pulse high
-    set x, 31               ; Outer: 32 iterations
-pulse_outer:
-    set y, 31               ; Middle: 32 iterations
-pulse_middle:
-    nop [31]                ; Inner: 32 cycles
-    nop [31]                ; 32 cycles
-    nop [31]                ; 32 cycles
-    nop [31]                ; 32 cycles
-    nop [31]                ; 32 cycles
-    nop [31]                ; 32 cycles
-    nop [31]                ; 32 cycles
-    nop [31]                ; 32 cycles (total: 8×32 = 256 cycles per middle loop)
-    jmp y-- pulse_middle    ; 256 × 32 = 8,192 cycles per outer loop
-    jmp x-- pulse_outer     ; 8,192 × 32 = 262,144 cycles total = 3.1ms
-    set pins, 0             ; Pulse low (visible on any scope!)
+    set y, 25               ; 26 iterations
+pulse_loop:
+    nop [31]                ; 32 cycles per iteration
+    jmp y-- pulse_loop      ; 26 iterations × 33 cycles = 858 cycles ≈ 10.3µs
+    set pins, 0             ; Pulse low
 .wrap                       ; Back to waiting for next reload
 
 % c-sdk {

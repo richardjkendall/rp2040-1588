@@ -1,14 +1,19 @@
 /**
- * PTP Phase Offset Measurement Device
+ * PTP Phase Offset Measurement Device - WiFi Telemetry Version
+ *
+ * Dual-core architecture:
+ * - Core 0: GPS discipline + phase measurement (timing critical, no WiFi)
+ * - Core 1: WiFi telemetry streaming (all network overhead isolated)
  *
  * Independently measures phase offset between GM and Slave 1PPS signals
- * using GPS-calibrated crystal characterization.
+ * using GPS-calibrated crystal characterization, with remote telemetry.
  *
  * Architecture:
  * - GPS discipline for crystal calibration (scale factor)
  * - PIO SM2: GM→Slave counter (waits for GM, counts to Slave)
  * - PIO SM3: Slave→GM counter (waits for Slave, counts to GM)
  * - Take minimum of both measurements for true phase offset
+ * - Stream measurements to remote server via WiFi (Core 1 only)
  *
  * Resolution: ~12ns per tick (83.33 MHz PIO clock)
  * Accuracy: ±200-400ns (GPS discipline accuracy)
@@ -18,6 +23,7 @@
 #include <string.h>
 #include <math.h>
 #include "pico/stdlib.h"
+#include "pico/multicore.h"
 #include "hardware/clocks.h"
 #include "hardware/uart.h"
 #include "hardware/pio.h"
@@ -26,6 +32,13 @@
 #include "discipline_v3.h"
 #include "gm_to_slave_counter.pio.h"
 #include "slave_to_gm_counter.pio.h"
+#include "ring_buffer.h"
+#include "telemetry.h"
+
+// WiFi Configuration
+#define WIFI_SSID "bhop"
+#define WIFI_PASSWORD "houseofpeas"
+#define TELEMETRY_SERVER_IP "10.10.143.151"
 
 // GPS configuration
 #define GPS_UART_ID     uart0
@@ -52,6 +65,9 @@
 // Export debug pins for discipline module
 uint debug_lock_pin = DEBUG_LOCK_PIN;
 uint debug_pps_pin = DEBUG_PPS_PIN;
+
+// Shared ring buffer for Core 0 → Core 1 communication
+static measurement_ring_buffer_t measurement_buffer;
 
 // EMA statistics structure
 typedef struct {
@@ -179,6 +195,15 @@ static void print_stats(void) {
     extern volatile int32_t crystal_error_ns;
     double crystal_ppm = (double)crystal_error_ns / 1000000.0;
 
+    // Get telemetry stats
+    uint32_t batches_sent, send_failures, reconnects;
+    bool telemetry_connected;
+    telemetry_get_stats(&batches_sent, &send_failures, &reconnects, &telemetry_connected);
+
+    // Get ring buffer stats
+    uint32_t buffer_available, buffer_dropped;
+    ring_buffer_get_stats(&measurement_buffer, &buffer_available, &buffer_dropped);
+
     printf("\n=== Phase Offset Measurement ===\n");
     printf("Samples: %llu (GM first: %llu, Slave first: %llu)\n",
            phase_stats.count,
@@ -191,6 +216,13 @@ static void print_stats(void) {
            ema_5m, ema_15m, ema_30m);
     printf("GPS crystal: %+ld ns (%+.3f ppm)\n",
            (long)crystal_error_ns, crystal_ppm);
+
+    printf("\n=== Telemetry Status ===\n");
+    printf("WiFi: %s\n", telemetry_connected ? "Connected" : "Disconnected");
+    printf("Batches sent: %lu (failures: %lu, reconnects: %lu)\n",
+           batches_sent, send_failures, reconnects);
+    printf("Ring buffer: %lu available, %lu dropped\n",
+           buffer_available, buffer_dropped);
 
     // Print histogram (only non-zero bins near center)
     printf("\nHistogram (100ns bins):\n");
@@ -211,7 +243,7 @@ int main() {
     stdio_init_all();
     sleep_ms(2000);
 
-    printf("\n=== PTP Phase Offset Measurement Device ===\n");
+    printf("\n=== PTP Phase Offset Measurement Device (WiFi) ===\n");
     printf("System clock: %lu MHz\n\n", clock_get_hz(clk_sys) / 1000000);
 
     // Initialize debug GPIOs
@@ -251,12 +283,39 @@ int main() {
     printf("GM 1PPS input: GPIO%d\n", GM_PPS_PIN);
     printf("Slave 1PPS input: GPIO%d\n\n", SLAVE_PPS_PIN);
 
+    // Initialize ring buffer
+    printf("Initializing ring buffer...\n");
+    ring_buffer_init(&measurement_buffer);
+
+    // Configure telemetry
+    printf("Configuring WiFi telemetry...\n");
+    telemetry_config_t telemetry_config = {
+        .ssid = WIFI_SSID,
+        .password = WIFI_PASSWORD,
+        .server_ip = TELEMETRY_SERVER_IP,
+        .server_port = TELEMETRY_SERVER_PORT,
+        .ring_buffer = &measurement_buffer
+    };
+
+    if (!telemetry_init(&telemetry_config)) {
+        printf("FATAL: Telemetry init failed\n");
+        while (1) { sleep_ms(1000); }
+    }
+
+    // Launch Core 1 for telemetry
+    printf("Launching Core 1 for telemetry...\n");
+    multicore_launch_core1(telemetry_core1_entry);
+    sleep_ms(1000);  // Give Core 1 time to start
+
     printf("Waiting for GPS lock...\n\n");
 
     uint64_t last_stats_time_us = 0;
     uint64_t measurement_count = 0;
 
-    // Main loop
+    // External variable from discipline module
+    extern volatile int32_t crystal_error_ns;
+
+    // Main loop (Core 0 - timing critical)
     while (true) {
         uint64_t now_us = time_us_64();
 
@@ -301,7 +360,25 @@ int main() {
                 phase_offset_ns = gm_first ? gm_to_slave_ns : slave_to_gm_ns;
             }
 
-            // Update statistics (only for valid measurements)
+            // Prepare measurement for ring buffer
+            measurement_t m = {
+                .sequence = measurement_count,
+                .timestamp_us = now_us,
+                .phase_offset_ns = phase_offset_ns,
+                .gm_to_slave_ns = gm_to_slave_ns,
+                .slave_to_gm_ns = slave_to_gm_ns,
+                .scale_factor = sf,
+                .gm_first = gm_first,
+                .crystal_error_ns = crystal_error_ns
+            };
+
+            // Non-blocking write to ring buffer (for Core 1 telemetry)
+            if (!ring_buffer_try_write(&measurement_buffer, &m)) {
+                // Buffer full - Core 1 too slow (should never happen with 1000 slots)
+                // Measurement dropped, counter incremented automatically in ring_buffer
+            }
+
+            // Update local statistics (only for valid measurements)
             // Valid phase offset should be small (< 10ms) since we're measuring sub-second offsets
             // Filter out bad measurements (0ns or near 1 second)
             #define MIN_VALID_OFFSET_NS 1000.0      // 1µs minimum
