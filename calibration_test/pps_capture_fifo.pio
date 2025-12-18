@@ -1,0 +1,36 @@
+;
+; PPS Capture with FIFO Push
+; Detects PPS rising edges and pushes marker to FIFO
+;
+; Simpler than interrupt-based version - just pushes a marker value
+; when a rising edge is detected, allowing polling of RX FIFO.
+;
+
+.program pps_capture_fifo
+
+.wrap_target
+    wait 0 pin 0        ; Wait for pin to be low (idle state)
+    wait 1 pin 0        ; Wait for rising edge (PPS pulse)
+    push noblock        ; Push marker to FIFO (whatever is in ISR)
+.wrap
+
+% c-sdk {
+#include "hardware/pio.h"
+#include "hardware/gpio.h"
+
+static inline void pps_capture_fifo_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = pps_capture_fifo_program_get_default_config(offset);
+
+    // Configure the pin as input
+    sm_config_set_in_pins(&c, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+    pio_gpio_init(pio, pin);
+
+    // Run at full speed
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    // Initialize and enable the state machine
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

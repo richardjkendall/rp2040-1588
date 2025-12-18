@@ -160,6 +160,7 @@ add_subdirectory(slave)
 add_subdirectory(logger)
 add_subdirectory(measurement)
 add_subdirectory(final_phase_meter)
+add_subdirectory(calibration_test)
 
 # WiFi test only makes sense for WiFi builds
 if(NOT USE_ETHERNET)
