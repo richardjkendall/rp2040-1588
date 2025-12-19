@@ -104,6 +104,7 @@ typedef struct {
 } phase_stats_t;
 
 static phase_stats_t phase_stats = {0};
+static uint64_t rejected_measurement_count = 0;  // Global counter for rejected measurements
 
 // EMA alpha values
 #define EMA_ALPHA_5MIN  0.00333   // ~5 minute time constant
@@ -209,6 +210,8 @@ static void print_stats(void) {
            phase_stats.count,
            phase_stats.gm_first_count,
            phase_stats.slave_first_count);
+    printf("Rejected: %llu (PIO glitches when phase approaches zero)\n",
+           rejected_measurement_count);
     printf("Phase offset: %.1f ± %.1f ns (min: %.1f, max: %.1f)\n",
            phase_stats.mean_ns, stddev,
            phase_stats.min_ns, phase_stats.max_ns);
@@ -360,33 +363,43 @@ int main() {
                 phase_offset_ns = gm_first ? gm_to_slave_ns : slave_to_gm_ns;
             }
 
-            // Prepare measurement for ring buffer
-            measurement_t m = {
-                .sequence = measurement_count,
-                .timestamp_us = now_us,
-                .phase_offset_ns = phase_offset_ns,
-                .gm_to_slave_ns = gm_to_slave_ns,
-                .slave_to_gm_ns = slave_to_gm_ns,
-                .scale_factor = sf,
-                .gm_first = gm_first,
-                .crystal_error_ns = crystal_error_ns
-            };
-
-            // Non-blocking write to ring buffer (for Core 1 telemetry)
-            if (!ring_buffer_try_write(&measurement_buffer, &m)) {
-                // Buffer full - Core 1 too slow (should never happen with 1000 slots)
-                // Measurement dropped, counter incremented automatically in ring_buffer
-            }
-
-            // Update local statistics (only for valid measurements)
+            // Validate measurement before sending to telemetry or updating stats
             // Valid phase offset should be small (< 10ms) since we're measuring sub-second offsets
-            // Filter out bad measurements (0ns or near 1 second)
-            #define MIN_VALID_OFFSET_NS 1000.0      // 1µs minimum
-            #define MAX_VALID_OFFSET_NS 10000000.0  // 10ms maximum
+            // Filter out bad measurements caused by PIO glitches when edges are synchronized
+            #define MIN_VALID_OFFSET_NS 1000.0      // 1µs minimum (filters 0ns errors)
+            #define MAX_VALID_OFFSET_NS 10000000.0  // 10ms maximum (filters 1-second wraparound errors)
 
-            if (phase_offset_ns >= MIN_VALID_OFFSET_NS && phase_offset_ns <= MAX_VALID_OFFSET_NS) {
+            // Only validate the selected phase_offset_ns (not the raw counter values)
+            // The raw counters can be ~1 second in normal operation (when one edge wraps to next second)
+            bool is_valid = (phase_offset_ns >= MIN_VALID_OFFSET_NS &&
+                           phase_offset_ns <= MAX_VALID_OFFSET_NS);
+
+            if (is_valid) {
+                // Prepare measurement for ring buffer
+                measurement_t m = {
+                    .sequence = measurement_count,
+                    .timestamp_us = now_us,
+                    .phase_offset_ns = phase_offset_ns,
+                    .gm_to_slave_ns = gm_to_slave_ns,
+                    .slave_to_gm_ns = slave_to_gm_ns,
+                    .scale_factor = sf,
+                    .gm_first = gm_first,
+                    .crystal_error_ns = crystal_error_ns
+                };
+
+                // Non-blocking write to ring buffer (for Core 1 telemetry)
+                if (!ring_buffer_try_write(&measurement_buffer, &m)) {
+                    // Buffer full - Core 1 too slow (should never happen with 1000 slots)
+                    // Measurement dropped, counter incremented automatically in ring_buffer
+                }
+
+                // Update local statistics
                 update_phase_stats(phase_offset_ns, gm_first);
+            } else {
+                // Invalid measurement (PIO glitch when phase approaches zero)
+                rejected_measurement_count++;
             }
+
             measurement_count++;
 
             // Print individual measurements (first 20, then every 100th)
