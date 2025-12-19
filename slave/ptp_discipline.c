@@ -47,7 +47,8 @@
 // PHASE 1 IMPROVEMENT: Fixed measurement noise to match actual Ethernet jitter
 #define KALMAN_Q_OFFSET 1e6          // Process noise: offset variance (1 µs std dev)
 #define KALMAN_Q_FREQ 1e-4           // Process noise: frequency variance (0.0001 ppb std dev)
-#define KALMAN_R_MEASUREMENT 1e8     // Measurement noise: network jitter (10 µs std dev) - WAS 4e10 (200µs)
+#define KALMAN_R_MEASUREMENT_HW 1e8  // Measurement noise with HW timestamps (10 µs std dev)
+#define KALMAN_R_MEASUREMENT_SW 1e12 // Measurement noise with SW timestamps (1 ms std dev)
 #define KALMAN_ALPHA_LPF 0.1         // Low-pass filter for path delay (10 sec time constant)
 #define KALMAN_OUTLIER_THRESHOLD 1000000  // Reject measurements > 1ms from prediction (3σ)
 
@@ -503,14 +504,15 @@ static void kalman_predict(double dt) {
  * H = [1  0]  (we measure offset directly)
  *
  * @param measured_offset Measured offset in nanoseconds
+ * @param measurement_noise_r Measurement noise variance (depends on timestamp quality)
  */
-static void kalman_update(double measured_offset) {
+static void kalman_update(double measured_offset, double measurement_noise_r) {
     // Measurement residual: y = z - H * x
     double y = measured_offset - state.kalman_x[0];
 
     // Residual covariance: S = H * P * H' + R
     // Since H = [1 0], this simplifies to:
-    double S = state.kalman_P[0][0] + KALMAN_R_MEASUREMENT;
+    double S = state.kalman_P[0][0] + measurement_noise_r;
 
     // Kalman gain: K = P * H' * inv(S)
     // K is a 2x1 vector
@@ -783,9 +785,13 @@ void ptp_discipline_update(void) {
         }
     }
 
+    // Determine timestamp quality for Kalman and correction factor adjustment
+    bool hw_timestamps_used = ptp_sync_data.rx_hw_timestamp_valid && ptp_sync_data.tx_hw_timestamp_valid;
+    double measurement_noise_r = hw_timestamps_used ? KALMAN_R_MEASUREMENT_HW : KALMAN_R_MEASUREMENT_SW;
+
     // Update step: Correct prediction with noisy measurement (unless outlier)
     if (!is_outlier) {
-        kalman_update(measured_offset);
+        kalman_update(measured_offset, measurement_noise_r);
     }
 
     // Extract Kalman estimates (use prediction if we rejected measurement)
@@ -810,7 +816,12 @@ void ptp_discipline_update(void) {
         update_ptp_clock();  // Bring clock up to date first
 
         double correction_factor;
-        if (state.discipline_updates < 30) {
+
+        // Reduce correction factor for software timestamps (low confidence)
+        if (!hw_timestamps_used) {
+            // Software timestamp - minimal correction (2%)
+            correction_factor = 0.02;
+        } else if (state.discipline_updates < 30) {
             // Initial convergence: 50% correction for faster settling
             correction_factor = 0.5;
         } else if (state.discipline_updates < 100) {
