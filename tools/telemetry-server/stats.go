@@ -88,8 +88,9 @@ type AllanPoint struct {
 
 // TIEPoint represents a time-series data point for TIE plotting
 type TIEPoint struct {
-	Time    float64 `json:"time"`    // Time in seconds since first measurement
-	PhaseNs float64 `json:"phase_ns"` // Phase offset in nanoseconds
+	Time      float64 `json:"time"`       // Time in seconds since first measurement
+	PhaseNs   float64 `json:"phase_ns"`   // Phase offset in nanoseconds
+	IsOutlier bool    `json:"is_outlier"` // True if filtered from statistics
 }
 
 // HistogramData contains histogram bins and metadata
@@ -130,7 +131,7 @@ type StatsSnapshot struct {
 func NewStatistics() *Statistics {
 	return &Statistics{
 		updates:      make(chan *StatsSnapshot, 10),
-		measurements: make([]TimestampedMeasurement, 0, 2000), // Preallocate for ~30min @ 1Hz
+		measurements: make([]TimestampedMeasurement, 0, 8000), // Preallocate for ~2hr @ 1Hz
 	}
 }
 
@@ -260,8 +261,8 @@ func (s *Statistics) Update(batch *Batch) {
 		s.LastScaleFactor = m.ScaleFactor
 	}
 
-	// Prune old measurements (keep last 30 minutes)
-	cutoff := now.Add(-30 * time.Minute)
+	// Prune old measurements (keep last 2 hours for longer test runs)
+	cutoff := now.Add(-2 * time.Hour)
 	pruneIndex := 0
 	for i, m := range s.measurements {
 		if m.ReceivedAt.After(cutoff) {
@@ -556,30 +557,67 @@ func (s *Statistics) calculateAllan() []AllanPoint {
 	return result
 }
 
-// Build TIE time series data (all measurements in the last 30 minutes)
+// Build TIE time series data (ALL measurements, with outlier marking)
+// Shows complete data including outliers, but marks them so UI can display differently
 func (s *Statistics) buildTIEData() []TIEPoint {
 	if len(s.measurements) == 0 {
 		return nil
 	}
 
-	// Filter outliers first
-	filtered := s.filterOutliers(s.measurements)
-	if len(filtered) == 0 {
-		return nil
+	// Calculate median and MAD for outlier detection
+	// Use same logic as isOutlier() but for all measurements at once
+	values := make([]float64, len(s.measurements))
+	for i, m := range s.measurements {
+		values[i] = m.PhaseNs
 	}
 
-	result := make([]TIEPoint, 0, len(filtered))
+	// Sort to find median
+	sortedVals := make([]float64, len(values))
+	copy(sortedVals, values)
+	for i := 1; i < len(sortedVals); i++ {
+		key := sortedVals[i]
+		j := i - 1
+		for j >= 0 && sortedVals[j] > key {
+			sortedVals[j+1] = sortedVals[j]
+			j--
+		}
+		sortedVals[j+1] = key
+	}
+	median := sortedVals[len(sortedVals)/2]
 
-	// Use Pico timestamp (TimestampUs) for X-axis, not server receive time
-	// TimestampUs is in microseconds, convert to seconds
-	startTimeUs := filtered[0].TimestampUs
+	// Calculate MAD
+	absDeviations := make([]float64, len(values))
+	for i, v := range values {
+		absDeviations[i] = math.Abs(v - median)
+	}
+	for i := 1; i < len(absDeviations); i++ {
+		key := absDeviations[i]
+		j := i - 1
+		for j >= 0 && absDeviations[j] > key {
+			absDeviations[j+1] = absDeviations[j]
+			j--
+		}
+		absDeviations[j+1] = key
+	}
+	mad := absDeviations[len(absDeviations)/2]
+	if mad < 100 {
+		mad = 10000 // Minimum MAD of 10µs
+	}
+	threshold := 10.0 * mad
 
-	for i := 0; i < len(filtered); i++ {
-		m := filtered[i]
+	// Build TIE data with ALL points, marking outliers
+	result := make([]TIEPoint, 0, len(s.measurements))
+	startTimeUs := s.measurements[0].TimestampUs
+
+	for i := 0; i < len(s.measurements); i++ {
+		m := s.measurements[i]
 		elapsed := float64(m.TimestampUs-startTimeUs) / 1000000.0 // Convert µs to seconds
+		isOutlier := math.Abs(m.PhaseNs-median) > threshold
+
 		result = append(result, TIEPoint{
-			Time:    elapsed,
-			PhaseNs: m.PhaseNs,
+			Time:      elapsed,
+			PhaseNs:   m.PhaseNs,
+			IsOutlier: isOutlier,
 		})
 	}
 
@@ -706,7 +744,7 @@ func (s *Statistics) Reset() {
 	s.GmFirstCount = 0
 	s.SlaveFirstCount = 0
 	s.OutliersFiltered = 0
-	s.measurements = make([]TimestampedMeasurement, 0, 2000)
+	s.measurements = make([]TimestampedMeasurement, 0, 8000)
 }
 
 // GetRawMeasurements returns all stored measurements for download

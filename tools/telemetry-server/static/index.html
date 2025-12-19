@@ -485,22 +485,98 @@
                 return;
             }
 
+            // Separate normal points and outliers for different visualization
+            const normalPoints = data.filter(d => !d.is_outlier).map(d => ({x: d.time, y: d.phase_ns}));
+            const outlierPoints = data.filter(d => d.is_outlier).map(d => ({x: d.time, y: d.phase_ns}));
+
+            // Calculate Y-axis range based on NORMAL data only (ignore outliers for scaling)
+            let yMin = 0, yMax = 200000; // Default 0-200µs
+            if (normalPoints.length > 0) {
+                const normalValues = normalPoints.map(p => p.y);
+                const mean = normalValues.reduce((a, b) => a + b, 0) / normalValues.length;
+
+                // Calculate standard deviation
+                const variance = normalValues.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / normalValues.length;
+                const stdDev = Math.sqrt(variance);
+
+                // Set Y-axis to mean ± 4 standard deviations (captures 99.99% of normal data)
+                yMin = Math.max(0, mean - 4 * stdDev);
+                yMax = mean + 4 * stdDev;
+
+                // Add 10% margin for readability
+                const margin = (yMax - yMin) * 0.1;
+                yMin = Math.max(0, yMin - margin);
+                yMax = yMax + margin;
+            }
+
+            const datasets = [
+                {
+                    label: 'Phase Offset',
+                    data: normalPoints,
+                    borderColor: chartColors.primary,
+                    backgroundColor: chartColors.primary + '20',
+                    borderWidth: 1,
+                    pointRadius: 1,
+                    pointBackgroundColor: chartColors.primary,
+                    fill: true,
+                    tension: 0,
+                    order: 2
+                }
+            ];
+
+            // Add outliers as separate dataset if any exist
+            // Outliers beyond Y-axis range will be clipped but still visible as points at edge
+            if (outlierPoints.length > 0) {
+                datasets.push({
+                    label: `Outliers (${outlierPoints.length}, clipped)`,
+                    data: outlierPoints,
+                    borderColor: chartColors.danger,
+                    backgroundColor: chartColors.danger,
+                    borderWidth: 0,
+                    pointRadius: 4,
+                    pointBackgroundColor: chartColors.danger,
+                    pointBorderColor: chartColors.danger,
+                    pointStyle: 'triangle',
+                    fill: false,
+                    showLine: false,
+                    order: 1
+                });
+            }
+
             charts.tie = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    datasets: [{
-                        data: data.map(d => ({x: d.time, y: d.phase_ns})),
-                        borderColor: chartColors.primary,
-                        backgroundColor: chartColors.primary + '20',
-                        borderWidth: 1,
-                        pointRadius: 1,
-                        pointBackgroundColor: chartColors.primary,
-                        fill: true,
-                        tension: 0
-                    }]
+                    datasets: datasets
                 },
                 options: {
                     ...defaultChartOptions,
+                    plugins: {
+                        legend: {
+                            display: outlierPoints.length > 0,
+                            position: 'top',
+                            labels: {
+                                color: chartColors.text,
+                                padding: 10,
+                                font: { size: 10 },
+                                usePointStyle: true
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.dataset.label || '';
+                                    const value = context.parsed.y;
+                                    const time = context.parsed.x;
+
+                                    // Show if value is clipped
+                                    if (value > yMax || value < yMin) {
+                                        return `${label}: ${(value/1000).toFixed(1)} µs (CLIPPED - actual: ${(value/1000).toFixed(0)} µs)`;
+                                    }
+                                    return `${label}: ${(value/1000).toFixed(2)} µs`;
+                                }
+                            }
+                        }
+                    },
                     scales: {
                         x: {
                             type: 'linear',
@@ -513,9 +589,12 @@
                             ticks: { color: chartColors.text }
                         },
                         y: {
+                            type: 'linear',
+                            min: yMin,
+                            max: yMax,
                             title: {
                                 display: true,
-                                text: 'Phase Offset (ns)',
+                                text: 'Phase Offset (ns) - Auto-scaled to normal data',
                                 color: chartColors.text
                             },
                             grid: { color: chartColors.grid },

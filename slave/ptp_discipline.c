@@ -44,9 +44,10 @@
 #define UNLOCK_THRESHOLD_NS 1000000  // 1 millisecond
 
 // Kalman filter noise parameters
-#define KALMAN_Q_OFFSET 1e8          // Process noise: offset variance (100 µs std dev)
-#define KALMAN_Q_FREQ 1e-2           // Process noise: frequency variance (0.01 ppb std dev)
-#define KALMAN_R_MEASUREMENT 4e10    // Measurement noise: network jitter (200 µs std dev)
+// PHASE 1 IMPROVEMENT: Fixed measurement noise to match actual Ethernet jitter
+#define KALMAN_Q_OFFSET 1e6          // Process noise: offset variance (1 µs std dev)
+#define KALMAN_Q_FREQ 1e-4           // Process noise: frequency variance (0.0001 ppb std dev)
+#define KALMAN_R_MEASUREMENT 1e8     // Measurement noise: network jitter (10 µs std dev) - WAS 4e10 (200µs)
 #define KALMAN_ALPHA_LPF 0.1         // Low-pass filter for path delay (10 sec time constant)
 #define KALMAN_OUTLIER_THRESHOLD 1000000  // Reject measurements > 1ms from prediction (3σ)
 
