@@ -114,9 +114,10 @@ typedef struct {
     uint32_t discipline_updates;
     uint32_t outliers_rejected;
 
-    // Crystal characterization (derived from Kalman frequency estimate)
+    // Crystal characterization
     double scale_factor;
-    int64_t crystal_error_ns;
+    int64_t crystal_error_ns;           // Raw crystal measurement
+    double filtered_crystal_error_ns;   // EMA-filtered for stable scale_factor
 
     // Running statistics for stability analysis
     running_stats_t offset_stats;
@@ -193,10 +194,11 @@ bool ptp_discipline_init(void) {
 }
 
 /**
- * Update free-running PTP clock (PI Servo - Simplified)
+ * Update free-running PTP clock with continuous frequency correction
  * Call before modifying ptp_clock_ns to bring it up to date
  *
- * No scale_factor needed - PI servo handles frequency via corrections
+ * Applies scale_factor from PI integral to correct for crystal frequency error
+ * This eliminates sawtooth jitter from discrete corrections
  */
 static void update_ptp_clock(void) {
     if (state.ptp_clock_update_us == 0) {
@@ -211,9 +213,11 @@ static void update_ptp_clock(void) {
         return;
     }
 
-    // Simple nominal rate: 1µs crystal time = 1µs PTP time
-    // PI servo corrects frequency via small adjustments each cycle
-    uint64_t ptp_elapsed_ns = elapsed_us * 1000;
+    // Apply continuous frequency correction using scale_factor
+    // scale_factor = 1.0 - (freq_offset_ppb / 1e9)
+    // This makes the clock track crystal frequency in real-time
+    double scale_factor = ptp_discipline_get_scale_factor();
+    uint64_t ptp_elapsed_ns = (uint64_t)(elapsed_us * 1000.0 * scale_factor);
     state.ptp_clock_ns += ptp_elapsed_ns;
     state.ptp_clock_update_us = now_us;
 }
@@ -373,14 +377,14 @@ uint32_t ptp_discipline_get_outliers_rejected(void) {
  * Used by 1PPS scheduler to compensate for crystal frequency error
  */
 double ptp_discipline_get_scale_factor(void) {
-    // Convert frequency offset (ppb) to scale factor for scheduler
-    // freq_offset_ppb > 0 means slave clock runs fast (ahead)
-    // Scheduler divides by scale_factor, so:
-    // - Crystal fast: scale_factor < 1.0 → more ticks after division
-    // - Crystal slow: scale_factor > 1.0 → fewer ticks after division
-    // scale_factor = 1.0 - (freq_offset / 1e9)
-    // Example: +34000 ppb (fast) → 0.999966 → ticks/0.999966 = more ticks ✓
-    return 1.0 - (state.freq_offset_ppb / 1000000000.0);
+    // Use filtered crystal measurement (independent of PI servo, but smoothed)
+    // filtered_crystal_error_ns is EMA-filtered to reduce measurement noise
+    // Positive error = crystal runs fast (ahead)
+
+    // Convert ns per second to ppm, then to scale factor
+    // Example: +34000 ns/s = +34 ppm → scale_factor = 0.999966
+    double crystal_ppm = state.filtered_crystal_error_ns / 1000.0;  // ns/ms = ppm
+    return 1.0 - (crystal_ppm / 1000000.0);
 }
 
 /**
@@ -724,6 +728,18 @@ void ptp_discipline_update(void) {
     int64_t crystal_error_ticks = (int64_t)elapsed_ticks - (int64_t)expected_ticks;
     state.crystal_error_ns = crystal_error_ticks * 12; // 12ns per tick
 
+    // Apply EMA filter to reduce noise (10-second time constant at 1Hz updates)
+    // Alpha = 0.1 means: 90% old value, 10% new measurement
+    const double CRYSTAL_FILTER_ALPHA = 0.1;
+    if (state.discipline_updates == 1) {
+        // First update: initialize filter with measurement
+        state.filtered_crystal_error_ns = (double)state.crystal_error_ns;
+    } else {
+        // Subsequent updates: apply EMA filter
+        state.filtered_crystal_error_ns = state.filtered_crystal_error_ns * (1.0 - CRYSTAL_FILTER_ALPHA) +
+                                          (double)state.crystal_error_ns * CRYSTAL_FILTER_ALPHA;
+    }
+
     // 4. PI Servo - Industry Standard Control Algorithm
     // Calculate time delta for PI servo
     uint64_t current_time_us = ptp_sync_data.t2_slave_us;
@@ -776,12 +792,13 @@ void ptp_discipline_update(void) {
                ptp_sync_data.tx_hw_timestamp_valid ? 1 : 0);
 
     } else {
-        // SLEW: Small offset - use PI servo frequency adjustment
+        // SLEW: Small offset - use full PI servo output
+        // PI servo provides discrete corrections (P + I terms)
+        // Crystal measurement provides continuous frequency tracking (via scale_factor)
 
-        // Apply PI servo output as correction
-        int64_t correction = freq_adj_ns;
+        int64_t correction = freq_adj_ns;  // Full PI servo output
 
-        state.ptp_clock_ns -= correction;  // Subtract to bring us closer to master
+        state.ptp_clock_ns -= correction;  // Apply correction to bring us closer to master
 
         // Correlation-friendly log: parseable format for alignment with measurement data
         // Format: DISC|timestamp_us|seq|offset_ns|correction_ns|pi_integral|freq_ppb|hw_rx|hw_tx
