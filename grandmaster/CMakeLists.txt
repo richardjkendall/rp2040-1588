@@ -183,6 +183,7 @@ add_executable(w5500_dual_core
     gps.c
     discipline_v3.c
     pps_scheduler.c
+    hw_timestamp.c
 )
 
 target_include_directories(w5500_dual_core PRIVATE
@@ -215,6 +216,8 @@ target_link_libraries(w5500_dual_core
 pico_generate_pio_header(w5500_dual_core ${CMAKE_CURRENT_LIST_DIR}/pio/gps_discipline_v2.pio)
 pico_generate_pio_header(w5500_dual_core ${CMAKE_SOURCE_DIR}/pio/pps_capture.pio)
 pico_generate_pio_header(w5500_dual_core ${CMAKE_CURRENT_LIST_DIR}/pio/scheduled_1pps.pio)
+pico_generate_pio_header(w5500_dual_core ${CMAKE_CURRENT_LIST_DIR}/pio/counter_simple.pio)
+pico_generate_pio_header(w5500_dual_core ${CMAKE_CURRENT_LIST_DIR}/pio/int_timestamp.pio)
 
 # Enable USB output
 pico_enable_stdio_usb(w5500_dual_core 1)

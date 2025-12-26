@@ -101,4 +101,13 @@ const uint8_t* ptp_slave_w5500_get_gm_mac(void);
  */
 uint32_t ptp_slave_w5500_get_gm_ip(void);
 
+/**
+ * Get RX averaging statistics
+ *
+ * @param avg_ns Output: running average RX latency in nanoseconds
+ * @param sample_count Output: number of successful HW samples
+ * @param fallback_count Output: number of times average was used
+ */
+void ptp_slave_w5500_get_rx_avg_stats(int64_t *avg_ns, uint32_t *sample_count, uint32_t *fallback_count);
+
 #endif // PTP_SLAVE_W5500_H

@@ -52,7 +52,13 @@ static struct {
     int64_t pending_correction_sync_ns;
     int64_t pending_rx_latency_ns;    // RX latency (HW to SW)
     bool pending_rx_hw_ts_valid;      // Whether HW timestamp was correlated
+    bool pending_rx_used_average;     // Whether average was used instead of actual HW
     bool sync_pending;
+
+    // Running average of RX HW latencies (for fallback when HW correlation fails)
+    int64_t rx_latency_avg_ns;
+    uint32_t rx_latency_sample_count;
+    uint32_t rx_fallback_count;       // Count of times average was used
 } ptp_state = {0};
 
 /**
@@ -93,6 +99,7 @@ void ptp_slave_w5500_handle_sync(const ptp_sync_msg_t *sync, const udp_packet_t 
     int64_t rx_latency_ns = 0;
     bool hw_ts_valid = find_hw_timestamp_for_rx(counter_sw, t2_slave_us,
                                                  &counter_hw, &rx_latency_ns);
+    bool used_average = false;
 
 #ifdef DEBUG_RX_CORRELATION
     // Debug first few RX correlations
@@ -108,9 +115,51 @@ void ptp_slave_w5500_handle_sync(const ptp_sync_msg_t *sync, const udp_packet_t 
     }
 #endif
 
+    // Save uncorrected t2 for diagnostics
+    uint64_t t2_ptp_ns_uncorrected = t2_ptp_ns;
+
     // If hardware timestamp found, correct t2 to wire time
     if (hw_ts_valid && rx_latency_ns > 0 && rx_latency_ns < 1000000) {  // Sanity check < 1ms
         t2_ptp_ns -= rx_latency_ns;  // Move back to wire time
+
+        // Update running average using exponential moving average (EMA)
+        // alpha = 0.1 gives good balance between stability and responsiveness
+        if (ptp_state.rx_latency_sample_count == 0) {
+            // First sample: initialize average
+            ptp_state.rx_latency_avg_ns = rx_latency_ns;
+        } else {
+            // EMA: avg_new = alpha * sample + (1-alpha) * avg_old
+            // Using fixed-point: avg_new = (sample + 9*avg_old) / 10
+            ptp_state.rx_latency_avg_ns = (rx_latency_ns + 9 * ptp_state.rx_latency_avg_ns) / 10;
+        }
+        ptp_state.rx_latency_sample_count++;
+    } else {
+        // HW timestamp correlation failed
+        hw_ts_valid = false;
+
+        // Use average latency as fallback (if we have samples)
+        if (ptp_state.rx_latency_sample_count > 0) {
+            rx_latency_ns = ptp_state.rx_latency_avg_ns;
+            t2_ptp_ns -= rx_latency_ns;
+            ptp_state.rx_fallback_count++;
+            used_average = true;
+        }
+        // else: no samples yet, fall back to SW timestamp (no correction)
+    }
+
+    // PHASE 1: Log uncorrected vs corrected t2
+    static uint32_t t2_log_count = 0;
+    t2_log_count++;
+    if (t2_log_count % 100 == 0) {
+        const char *ts_type = hw_ts_valid ? "HW" : (used_average ? "AVG" : "SW");
+        printf("\n=== T2 TIMESTAMP DIAGNOSTIC ===\n");
+        printf("T2 uncorrected (SW): %llu ns\n", t2_ptp_ns_uncorrected);
+        printf("RX latency:          %+lld ns (%s)\n",
+               -(long long)rx_latency_ns, ts_type);
+        printf("T2 corrected:        %llu ns\n", t2_ptp_ns);
+        printf("Correction applied:  %+lld ns\n",
+               (long long)(t2_ptp_ns - t2_ptp_ns_uncorrected));
+        printf("================================\n\n");
     }
 
     // Learn grandmaster from first Sync
@@ -138,6 +187,7 @@ void ptp_slave_w5500_handle_sync(const ptp_sync_msg_t *sync, const udp_packet_t 
     ptp_state.pending_correction_sync_ns = correction_ns;
     ptp_state.pending_rx_latency_ns = rx_latency_ns;
     ptp_state.pending_rx_hw_ts_valid = hw_ts_valid;
+    ptp_state.pending_rx_used_average = used_average;
     ptp_state.sync_pending = true;
 
     ptp_state.sync_count++;
@@ -174,6 +224,7 @@ void ptp_slave_w5500_handle_followup(const ptp_follow_up_msg_t *followup) {
     ptp_sync_data.sync_sequence = followup_seq;
     ptp_sync_data.rx_latency_ns = ptp_state.pending_rx_latency_ns;
     ptp_sync_data.rx_hw_timestamp_valid = ptp_state.pending_rx_hw_ts_valid;
+    ptp_sync_data.rx_used_average = ptp_state.pending_rx_used_average;
     ptp_sync_data.sync_followup_ready = true;
 
     ptp_state.sync_pending = false;
@@ -267,4 +318,13 @@ const uint8_t* ptp_slave_w5500_get_gm_mac(void) {
  */
 uint32_t ptp_slave_w5500_get_gm_ip(void) {
     return ptp_state.gm_ip;
+}
+
+/**
+ * Get RX averaging statistics
+ */
+void ptp_slave_w5500_get_rx_avg_stats(int64_t *avg_ns, uint32_t *sample_count, uint32_t *fallback_count) {
+    *avg_ns = ptp_state.rx_latency_avg_ns;
+    *sample_count = ptp_state.rx_latency_sample_count;
+    *fallback_count = ptp_state.rx_fallback_count;
 }

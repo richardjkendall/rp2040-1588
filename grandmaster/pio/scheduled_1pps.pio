@@ -27,13 +27,10 @@ countdown_loop:
     jmp x-- countdown_loop  ; Count down to zero (1 cycle per iteration)
 
     ; Generate pulse at second boundary
-    ; 1µs pulse width - minimizes overlap when phase approaches zero
-    ; 1µs = 1,000ns / 12ns = 83 cycles
-    set pins, 1             ; Pulse high
-    set y, 2                ; 3 iterations
-pulse_loop:
-    nop [31]                ; 32 cycles per iteration
-    jmp y-- pulse_loop      ; 3 iterations × 33 cycles = 99 cycles ≈ 1.2µs
+    ; 100ns pulse width - enables sub-microsecond phase measurement
+    ; 100ns ≈ 8 cycles @ 12ns/cycle
+    set pins, 1             ; Pulse high (1 cycle)
+    nop [6]                 ; Delay 7 cycles (total 8 cycles = 96ns)
     set pins, 0             ; Pulse low
 .wrap                       ; Back to waiting for next reload
 

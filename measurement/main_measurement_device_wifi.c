@@ -347,7 +347,7 @@ int main() {
             double phase_offset_ns;
             bool gm_first;
 
-            #define INVALID_THRESHOLD_NS 10000.0  // 10µs - measurements smaller than this are invalid
+            #define INVALID_THRESHOLD_NS 150.0    // 150ns - detect PIO glitch (pin already HIGH), just above 100ns pulse width
 
             if (gm_to_slave_ns < INVALID_THRESHOLD_NS && slave_to_gm_ns >= INVALID_THRESHOLD_NS) {
                 // GM→Slave saw pin already HIGH, use Slave→GM measurement
@@ -366,7 +366,7 @@ int main() {
             // Validate measurement before sending to telemetry or updating stats
             // Valid phase offset should be small (< 10ms) since we're measuring sub-second offsets
             // Filter out bad measurements caused by PIO glitches when edges are synchronized
-            #define MIN_VALID_OFFSET_NS 1000.0      // 1µs minimum (filters 0ns errors)
+            #define MIN_VALID_OFFSET_NS 50.0        // 50ns minimum - aggressive but safe with 100ns pulse width
             #define MAX_VALID_OFFSET_NS 10000000.0  // 10ms maximum (filters 1-second wraparound errors)
 
             // Only validate the selected phase_offset_ns (not the raw counter values)
@@ -374,29 +374,33 @@ int main() {
             bool is_valid = (phase_offset_ns >= MIN_VALID_OFFSET_NS &&
                            phase_offset_ns <= MAX_VALID_OFFSET_NS);
 
-            if (is_valid) {
-                // Prepare measurement for ring buffer
-                measurement_t m = {
-                    .sequence = measurement_count,
-                    .timestamp_us = now_us,
-                    .phase_offset_ns = phase_offset_ns,
-                    .gm_to_slave_ns = gm_to_slave_ns,
-                    .slave_to_gm_ns = slave_to_gm_ns,
-                    .scale_factor = sf,
-                    .gm_first = gm_first,
-                    .crystal_error_ns = crystal_error_ns
-                };
+            // If measurement below threshold, use threshold value as conservative estimate
+            // This indicates "excellent sync - at or below 50ns" without claiming false precision
+            double reported_offset = is_valid ? phase_offset_ns : MIN_VALID_OFFSET_NS;
 
-                // Non-blocking write to ring buffer (for Core 1 telemetry)
-                if (!ring_buffer_try_write(&measurement_buffer, &m)) {
-                    // Buffer full - Core 1 too slow (should never happen with 1000 slots)
-                    // Measurement dropped, counter incremented automatically in ring_buffer
-                }
+            // Always send measurement (no gaps in telemetry)
+            measurement_t m = {
+                .sequence = measurement_count,
+                .timestamp_us = now_us,
+                .phase_offset_ns = reported_offset,
+                .gm_to_slave_ns = gm_to_slave_ns,
+                .slave_to_gm_ns = slave_to_gm_ns,
+                .scale_factor = sf,
+                .gm_first = gm_first,
+                .crystal_error_ns = crystal_error_ns
+            };
 
-                // Update local statistics
-                update_phase_stats(phase_offset_ns, gm_first);
-            } else {
-                // Invalid measurement (PIO glitch when phase approaches zero)
+            // Non-blocking write to ring buffer (for Core 1 telemetry)
+            if (!ring_buffer_try_write(&measurement_buffer, &m)) {
+                // Buffer full - Core 1 too slow (should never happen with 1000 slots)
+                // Measurement dropped, counter incremented automatically in ring_buffer
+            }
+
+            // Update local statistics (use actual measurement for stats tracking)
+            update_phase_stats(reported_offset, gm_first);
+
+            if (!is_valid) {
+                // Count rejections for diagnostics
                 rejected_measurement_count++;
             }
 

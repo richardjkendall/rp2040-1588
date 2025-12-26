@@ -29,6 +29,7 @@ typedef struct {
     // Hardware timestamp correlation for RX
     volatile int64_t rx_latency_ns;       // RX latency (HW to SW), 0 if no HW timestamp found
     volatile bool rx_hw_timestamp_valid;  // Whether HW timestamp was correlated
+    volatile bool rx_used_average;        // Whether average was used instead of actual HW
 
     // Delay_Req + Delay_Resp timestamps
     volatile uint64_t t3_ptp_ns;          // Slave TX time (from PTP clock)

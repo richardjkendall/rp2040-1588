@@ -45,11 +45,12 @@ extern ptp_sync_data_t ptp_sync_data;
 // Core synchronization
 volatile bool core0_ready = false;
 
-// Tight lock tracking (shared between cores)
-volatile uint32_t tight_lock_achieved_count = 0;
-volatile uint32_t tight_lock_lost_count = 0;
-volatile uint32_t tight_lock_max_duration_s = 0;
-volatile uint64_t lock_achieved_us = 0;  // Timestamp when tight lock achieved (0 = not locked)
+// 1PPS enable/disable tracking (shared between cores)
+volatile bool pps_enabled = false;                 // 1PPS output enabled
+volatile uint32_t tight_lock_achieved_count = 0;  // Number of times 1PPS enabled
+volatile uint32_t tight_lock_lost_count = 0;      // Number of times 1PPS disabled (PTP lock lost)
+volatile uint32_t tight_lock_max_duration_s = 0;  // Longest continuous 1PPS uptime
+volatile uint64_t lock_achieved_us = 0;            // Timestamp when 1PPS enabled (0 = disabled)
 
 // W5500 INT pin (from w5500_simple.h)
 #define W5500_PIN_INT 21
@@ -248,7 +249,7 @@ void core1_network_entry(void) {
                     tx_latency_ns = counter_delta_to_ns(counter_before, latest_hw_counter);
                     // Sanity check
                     if (tx_latency_ns > 0 && tx_latency_ns < 1000000) {  // < 1ms
-                        ptp_sync_data.t3_ptp_ns = t3_ptp_sw + tx_latency_ns;  // Move forward to wire time
+                        ptp_sync_data.t3_ptp_ns = t3_ptp_sw - tx_latency_ns;  // Move back to wire time (empirically correct)
                     } else {
                         ptp_sync_data.t3_ptp_ns = t3_ptp_sw;  // Use software timestamp
                         hw_ts_valid = false;
@@ -260,6 +261,20 @@ void core1_network_entry(void) {
                 ptp_sync_data.t3_slave_us = t3_slave_us;
                 ptp_sync_data.tx_latency_ns = tx_latency_ns;
                 ptp_sync_data.tx_hw_timestamp_valid = hw_ts_valid;
+
+                // PHASE 1: Log uncorrected vs corrected t3
+                static uint32_t t3_log_count = 0;
+                t3_log_count++;
+                if (t3_log_count % 100 == 0) {
+                    printf("\n=== T3 TIMESTAMP DIAGNOSTIC ===\n");
+                    printf("T3 uncorrected (SW): %llu ns\n", t3_ptp_sw);
+                    printf("TX latency:          %+lld ns (%s)\n",
+                           (long long)tx_latency_ns, hw_ts_valid ? "HW" : "SW");
+                    printf("T3 corrected:        %llu ns\n", ptp_sync_data.t3_ptp_ns);
+                    printf("Correction applied:  %+lld ns\n",
+                           (long long)(ptp_sync_data.t3_ptp_ns - t3_ptp_sw));
+                    printf("================================\n\n");
+                }
             }
 
             last_delay_req_time_us = now_us;
@@ -294,14 +309,23 @@ void core1_network_entry(void) {
                    pd_mean, pd_std,
                    ptp_stats.freq_offset_ppb,
                    ptp_stats.scale_factor, sf_std);
-            // Calculate current tight lock duration
-            uint32_t current_lock_s = (lock_achieved_us > 0) ?
+            // Calculate current 1PPS enabled duration
+            uint32_t current_pps_s = (lock_achieved_us > 0) ?
                 (now_us - lock_achieved_us) / 1000000 : 0;
 
-            printf("TightLock: Now=%lus Max=%lus Ach=%lu Lost=%lu | HW_TS: RX=%lu%% TX=%lu%%\n\n",
-                   current_lock_s, tight_lock_max_duration_s,
+            printf("1PPS: %s Uptime=%lus Max=%lus Enabled=%lu Disabled=%lu | HW_TS: RX=%lu%% TX=%lu%%\n",
+                   pps_enabled ? "ON " : "OFF",
+                   current_pps_s, tight_lock_max_duration_s,
                    tight_lock_achieved_count, tight_lock_lost_count,
                    hw_rx_pct, hw_tx_pct);
+
+            // Get and display RX averaging statistics
+            int64_t rx_avg_ns;
+            uint32_t rx_sample_count, rx_fallback_count;
+            ptp_slave_w5500_get_rx_avg_stats(&rx_avg_ns, &rx_sample_count, &rx_fallback_count);
+            printf("RX_AVG: Fallback=%lu/%lu Avg=%+lld ns Samples=%lu\n\n",
+                   rx_fallback_count, sync_count,
+                   (long long)rx_avg_ns, rx_sample_count);
 
             last_stats_time_us = now_us;
         }
@@ -360,9 +384,9 @@ int main() {
 
     // MINIMAL LOOP - Only PTP discipline updates + 1PPS scheduling
     // (Core 1 now handles HW timestamp FIFO draining)
+    // Note: pps_enabled is now a volatile global (shared with Core 1 for stats)
 
     uint64_t last_pps_schedule_us = 0;
-    bool pps_enabled = false;
 
     while (true) {
         // Update discipline when new timestamp set available
@@ -371,39 +395,36 @@ int main() {
         extern ptp_discipline_stats_t ptp_stats;
         uint64_t now_us = time_us_64();
 
-        // Track sustained tight lock
-        // Require offset < 200µs continuously for 60 seconds before enabling 1PPS
-        if (ptp_stats.locked && llabs(ptp_stats.offset_from_master_ns) < 200000) {
-            if (lock_achieved_us == 0) {
-                lock_achieved_us = now_us;
-                tight_lock_achieved_count++;
-                printf("[Core 0] Tight lock achieved (offset < 200us), monitoring... [#%lu]\n",
-                       tight_lock_achieved_count);
-            }
-        } else {
-            // Lost tight lock - reset timer
-            if (lock_achieved_us != 0) {
-                uint32_t duration_s = (now_us - lock_achieved_us) / 1000000;
-                if (duration_s > tight_lock_max_duration_s) {
-                    tight_lock_max_duration_s = duration_s;
-                }
-                tight_lock_lost_count++;
-                printf("[Core 0] Tight lock lost (offset=%+lldns) after %lus [#%lu]\n",
-                       (long long)ptp_stats.offset_from_master_ns,
-                       duration_s,
-                       tight_lock_lost_count);
-                lock_achieved_us = 0;
-            }
+        // Simplified 1PPS enable logic:
+        // Enable once step phase complete (100 updates ~= 100 seconds), basic lock achieved,
+        // and offset reasonable. Then keep running continuously - only disable on total sync loss.
+
+        // Enable 1PPS when ready (one-time check)
+        if (!pps_enabled && ptp_stats.locked &&
+            ptp_stats.discipline_updates > 100 &&
+            llabs(ptp_stats.offset_from_master_ns) < 500000) {
+
+            pps_enabled = true;
+            lock_achieved_us = now_us;  // Track when enabled for stats
+            tight_lock_achieved_count++;
+            printf("[Core 0] 1PPS enabled (step phase complete, offset=%+lldns) [#%lu]\n",
+                   (long long)ptp_stats.offset_from_master_ns,
+                   tight_lock_achieved_count);
         }
 
-        // Only enable 1PPS after 60 seconds of SUSTAINED tight lock
-        // This ensures absolute PTP time has fully settled
-        if (!pps_enabled && lock_achieved_us != 0) {
-            if (now_us - lock_achieved_us >= 60000000) {  // 60 seconds
-                pps_enabled = true;
-                printf("[Core 0] 1PPS enabled (sustained tight lock, offset=%+lldns)\n",
-                       (long long)ptp_stats.offset_from_master_ns);
+        // Disable only if we lose basic PTP lock entirely (offset > 1ms)
+        if (pps_enabled && !ptp_stats.locked) {
+            uint32_t duration_s = (now_us - lock_achieved_us) / 1000000;
+            if (duration_s > tight_lock_max_duration_s) {
+                tight_lock_max_duration_s = duration_s;
             }
+            tight_lock_lost_count++;
+            printf("[Core 0] 1PPS disabled (PTP lock lost, offset=%+lldns) after %lus [#%lu]\n",
+                   (long long)ptp_stats.offset_from_master_ns,
+                   duration_s,
+                   tight_lock_lost_count);
+            pps_enabled = false;
+            lock_achieved_us = 0;
         }
 
         // Schedule 1PPS only when close to second boundary and FIFO is ready

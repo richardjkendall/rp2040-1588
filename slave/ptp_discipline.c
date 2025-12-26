@@ -43,14 +43,25 @@
 #define LOCK_SAMPLES_REQUIRED 5
 #define UNLOCK_THRESHOLD_NS 1000000  // 1 millisecond
 
-// Kalman filter noise parameters
-// PHASE 1 IMPROVEMENT: Fixed measurement noise to match actual Ethernet jitter
-#define KALMAN_Q_OFFSET 1e6          // Process noise: offset variance (1 µs std dev)
-#define KALMAN_Q_FREQ 1e-4           // Process noise: frequency variance (0.0001 ppb std dev)
-#define KALMAN_R_MEASUREMENT_HW 1e8  // Measurement noise with HW timestamps (10 µs std dev)
-#define KALMAN_R_MEASUREMENT_SW 1e12 // Measurement noise with SW timestamps (1 ms std dev)
-#define KALMAN_ALPHA_LPF 0.1         // Low-pass filter for path delay (10 sec time constant)
-#define KALMAN_OUTLIER_THRESHOLD 1000000  // Reject measurements > 1ms from prediction (3σ)
+// Step threshold (industry standard approach)
+// Applied during initial acquisition to handle boot offset
+#define STEP_THRESHOLD_NS 500000     // 500 microseconds
+#define STEP_UPDATES_MAX 100         // Allow stepping for first 100 updates
+
+// Asymmetry correction (empirical from crossover cable test 2024-12-24)
+// Accounts for total discrepancy between PTP calculated offset and 1PPS measured offset
+// Includes both path asymmetry (96µs) and systematic bias (85µs)
+// See docs/ASYMMETRY_CORRECTION.md for detailed analysis
+#define ASYMMETRY_CORRECTION_NS 181000  // 181 microseconds
+
+// PI Servo Parameters (industry standard values similar to LinuxPTP)
+#define PI_KP 0.7                    // Proportional gain (standard)
+#define PI_KI 0.0012                 // Integral gain (adjusted for 1Hz updates, 300x smaller)
+#define PI_MAX_INTEGRAL 1000000000   // Anti-windup: ±1 second
+#define PI_MAX_FREQ_ADJ 100000       // Max frequency adj: ±100µs per update
+
+// Path delay filter
+#define PATH_DELAY_ALPHA 0.1         // EMA filter: 10 second time constant
 
 // EMA alpha values for different time windows (α = 1 - exp(-1/N) where N = window in seconds)
 #define EMA_ALPHA_5MIN  0.00333      // ~5 minute time constant (300 sec)
@@ -89,14 +100,10 @@ typedef struct {
     int64_t mean_path_delay_ns;
     int64_t offset_from_master_ns;
 
-    // Servo state (legacy PI servo - being replaced by Kalman)
-    double freq_offset_ppb;
-    int64_t integral_term;
-
-    // Kalman filter state (2-state: offset, frequency)
-    double kalman_x[2];      // State: [offset_ns, freq_offset_ppb]
-    double kalman_P[2][2];   // Covariance matrix
-    bool kalman_initialized;
+    // PI Servo state
+    double pi_integral;         // Integral term (accumulated error) in nanoseconds
+    uint64_t last_update_us;    // Last discipline update time for dt calculation
+    double freq_offset_ppb;     // Derived from PI integral for stats/logging
 
     // Lock detection
     uint32_t lock_sample_count;
@@ -169,11 +176,12 @@ bool ptp_discipline_init(void) {
 
     // Initialize state
     state.first_sync = true;
-    state.scale_factor = 1.0;
+    state.scale_factor = 1.0;           // Fixed at 1.0 (PI servo handles frequency)
     state.mean_path_delay_ns = 0;
     state.offset_from_master_ns = 0;
     state.freq_offset_ppb = 0.0;
-    state.integral_term = 0;
+    state.pi_integral = 0.0;
+    state.last_update_us = 0;
     state.locked = false;
     state.lock_sample_count = 0;
 
@@ -185,8 +193,10 @@ bool ptp_discipline_init(void) {
 }
 
 /**
- * Update free-running PTP clock using scale factor (GPS-style)
+ * Update free-running PTP clock (PI Servo - Simplified)
  * Call before modifying ptp_clock_ns to bring it up to date
+ *
+ * No scale_factor needed - PI servo handles frequency via corrections
  */
 static void update_ptp_clock(void) {
     if (state.ptp_clock_update_us == 0) {
@@ -201,13 +211,9 @@ static void update_ptp_clock(void) {
         return;
     }
 
-    // Scale to PTP nanoseconds using characterized crystal scale factor
-    double scale = state.scale_factor;
-    if (scale == 0.0 || state.discipline_updates < 3) {
-        scale = 1.0;  // Use nominal rate until characterized
-    }
-
-    uint64_t ptp_elapsed_ns = (uint64_t)((double)elapsed_us * 1000.0 * scale);
+    // Simple nominal rate: 1µs crystal time = 1µs PTP time
+    // PI servo corrects frequency via small adjustments each cycle
+    uint64_t ptp_elapsed_ns = elapsed_us * 1000;
     state.ptp_clock_ns += ptp_elapsed_ns;
     state.ptp_clock_update_us = now_us;
 }
@@ -363,9 +369,18 @@ uint32_t ptp_discipline_get_outliers_rejected(void) {
 
 /**
  * Get current scale factor
+ * Derived from PI integral (frequency offset in ppb)
+ * Used by 1PPS scheduler to compensate for crystal frequency error
  */
 double ptp_discipline_get_scale_factor(void) {
-    return state.scale_factor;
+    // Convert frequency offset (ppb) to scale factor for scheduler
+    // freq_offset_ppb > 0 means slave clock runs fast (ahead)
+    // Scheduler divides by scale_factor, so:
+    // - Crystal fast: scale_factor < 1.0 → more ticks after division
+    // - Crystal slow: scale_factor > 1.0 → fewer ticks after division
+    // scale_factor = 1.0 - (freq_offset / 1e9)
+    // Example: +34000 ppb (fast) → 0.999966 → ticks/0.999966 = more ticks ✓
+    return 1.0 - (state.freq_offset_ppb / 1000000000.0);
 }
 
 /**
@@ -404,10 +419,10 @@ void ptp_discipline_get_stats(double *offset_mean_us, double *offset_stddev_us,
 }
 
 /**
- * Get current PTP time (GPS-style interpolation with scale factor)
+ * Get current PTP time (PI Servo - Simplified)
  *
- * Returns absolute PTP time by interpolating between Sync boundaries using
- * characterized crystal scale factor (like GPS grandmaster approach).
+ * Returns absolute PTP time by interpolating between Sync boundaries.
+ * PI servo corrects frequency via discipline loop, not via scale_factor.
  *
  * CRITICAL: Placed in SRAM for deterministic execution (no flash cache misses)
  */
@@ -420,122 +435,62 @@ uint64_t __time_critical_func(get_ptp_time_ns)(void) {
     uint64_t now_us = time_us_64();
     uint64_t elapsed_us = now_us - state.ptp_clock_update_us;
 
-    // Scale to PTP nanoseconds using characterized crystal scale factor
-    // System timer runs at same crystal rate as PIO counter
-    // scale_factor = expected_ticks / measured_ticks = how to convert crystal time to PTP time
-    double scale = state.scale_factor;
-    if (scale == 0.0 || state.discipline_updates < 3) {
-        scale = 1.0;  // Use nominal rate until characterized
-    }
+    // Simple nominal rate: 1µs crystal time = 1µs PTP time
+    uint64_t ptp_elapsed_ns = elapsed_us * 1000;
 
-    uint64_t ptp_elapsed_ns = (uint64_t)((double)elapsed_us * 1000.0 * scale);
-
-    // PTP time = last Sync boundary + scaled elapsed time
+    // PTP time = last Sync boundary + elapsed time
     return state.ptp_clock_ns + ptp_elapsed_ns;
 }
 
 /**
- * Initialize Kalman filter
+ * PI Servo Controller
+ *
+ * Classic Proportional-Integral controller for frequency control.
+ * Industry-standard approach used by LinuxPTP, PTPd, and other implementations.
+ *
+ * Controller equation:
+ *   u(t) = Kp·e(t) + Ki·∫e(τ)dτ
+ *
+ * where:
+ *   e(t) = offset from master (error signal)
+ *   u(t) = control output (frequency adjustment in nanoseconds)
+ *
+ * @param offset_ns Current offset from master in nanoseconds (positive = slave ahead)
+ * @param dt_sec Time since last update in seconds
+ * @return Frequency adjustment to apply (nanoseconds to subtract from clock)
  */
-static void kalman_init(void) {
-    // Initial state: zero offset, zero frequency offset
-    state.kalman_x[0] = 0.0;  // offset_ns
-    state.kalman_x[1] = 0.0;  // freq_offset_ppb
+static int64_t pi_servo_update(double offset_ns, double dt_sec) {
+    // Proportional term: immediate response to current error
+    double p_term = PI_KP * offset_ns;
 
-    // Initial covariance: high uncertainty
-    state.kalman_P[0][0] = 1e12;  // High uncertainty in offset
-    state.kalman_P[0][1] = 0.0;
-    state.kalman_P[1][0] = 0.0;
-    state.kalman_P[1][1] = 1e6;   // High uncertainty in frequency
+    // Integral term: accumulate error over time
+    // This acts as frequency offset estimator
+    state.pi_integral += PI_KI * offset_ns * dt_sec;
 
-    state.kalman_initialized = true;
-}
+    // Anti-windup: prevent integral from growing unbounded
+    if (state.pi_integral > PI_MAX_INTEGRAL) {
+        state.pi_integral = PI_MAX_INTEGRAL;
+    } else if (state.pi_integral < -PI_MAX_INTEGRAL) {
+        state.pi_integral = -PI_MAX_INTEGRAL;
+    }
 
-/**
- * Kalman filter predict step
- *
- * State transition:
- *   offset(k+1) = offset(k) + freq_offset(k) * dt
- *   freq_offset(k+1) = freq_offset(k)
- *
- * @param dt Time step in seconds (typically 1.0 for PTP)
- */
-static void kalman_predict(double dt) {
-    // State prediction: x = F * x
-    // F = [1  dt]
-    //     [0   1]
-    double x_pred[2];
-    x_pred[0] = state.kalman_x[0] + state.kalman_x[1] * dt;
-    x_pred[1] = state.kalman_x[1];
+    // Total control output (frequency adjustment)
+    double freq_adj = p_term + state.pi_integral;
 
-    // Covariance prediction: P = F * P * F' + Q
-    double P_pred[2][2];
+    // Limit maximum adjustment per cycle (safety/stability)
+    if (freq_adj > PI_MAX_FREQ_ADJ) {
+        freq_adj = PI_MAX_FREQ_ADJ;
+    } else if (freq_adj < -PI_MAX_FREQ_ADJ) {
+        freq_adj = -PI_MAX_FREQ_ADJ;
+    }
 
-    // F * P
-    double FP[2][2];
-    FP[0][0] = state.kalman_P[0][0] + dt * state.kalman_P[1][0];
-    FP[0][1] = state.kalman_P[0][1] + dt * state.kalman_P[1][1];
-    FP[1][0] = state.kalman_P[1][0];
-    FP[1][1] = state.kalman_P[1][1];
+    // Derive frequency offset in ppb for statistics
+    // integral term represents steady-state frequency correction in ns per cycle
+    // Since PTP cycles are ~1 second, this directly equals frequency offset in ppb
+    // (1 ns per second = 1 ppb = 1 ns/1e9 s = 1e-9 fractional frequency)
+    state.freq_offset_ppb = state.pi_integral;
 
-    // F * P * F'
-    P_pred[0][0] = FP[0][0] + dt * FP[0][1];
-    P_pred[0][1] = FP[0][1];
-    P_pred[1][0] = FP[1][0] + dt * FP[1][1];
-    P_pred[1][1] = FP[1][1];
-
-    // Add process noise Q
-    P_pred[0][0] += KALMAN_Q_OFFSET;
-    P_pred[1][1] += KALMAN_Q_FREQ;
-
-    // Update state
-    state.kalman_x[0] = x_pred[0];
-    state.kalman_x[1] = x_pred[1];
-    state.kalman_P[0][0] = P_pred[0][0];
-    state.kalman_P[0][1] = P_pred[0][1];
-    state.kalman_P[1][0] = P_pred[1][0];
-    state.kalman_P[1][1] = P_pred[1][1];
-}
-
-/**
- * Kalman filter update step
- *
- * Measurement model: z = offset + noise
- * H = [1  0]  (we measure offset directly)
- *
- * @param measured_offset Measured offset in nanoseconds
- * @param measurement_noise_r Measurement noise variance (depends on timestamp quality)
- */
-static void kalman_update(double measured_offset, double measurement_noise_r) {
-    // Measurement residual: y = z - H * x
-    double y = measured_offset - state.kalman_x[0];
-
-    // Residual covariance: S = H * P * H' + R
-    // Since H = [1 0], this simplifies to:
-    double S = state.kalman_P[0][0] + measurement_noise_r;
-
-    // Kalman gain: K = P * H' * inv(S)
-    // K is a 2x1 vector
-    double K[2];
-    K[0] = state.kalman_P[0][0] / S;
-    K[1] = state.kalman_P[1][0] / S;
-
-    // State update: x = x + K * y
-    state.kalman_x[0] += K[0] * y;
-    state.kalman_x[1] += K[1] * y;
-
-    // Covariance update: P = (I - K * H) * P
-    // Since H = [1 0]:
-    double P_new[2][2];
-    P_new[0][0] = (1.0 - K[0]) * state.kalman_P[0][0];
-    P_new[0][1] = (1.0 - K[0]) * state.kalman_P[0][1];
-    P_new[1][0] = state.kalman_P[1][0] - K[1] * state.kalman_P[0][0];
-    P_new[1][1] = state.kalman_P[1][1] - K[1] * state.kalman_P[0][1];
-
-    state.kalman_P[0][0] = P_new[0][0];
-    state.kalman_P[0][1] = P_new[0][1];
-    state.kalman_P[1][0] = P_new[1][0];
-    state.kalman_P[1][1] = P_new[1][1];
+    return (int64_t)freq_adj;
 }
 
 /**
@@ -600,15 +555,12 @@ void ptp_discipline_update(void) {
         state.ptp_clock_update_us = ptp_sync_data.t2_slave_us;
         state.first_sync = false;
 
-        // Save for crystal characterization (disabled)
-        state.prev_counter_value = ptp_sync_data.counter_at_sync;
-        state.prev_t1_master_ns = ptp_sync_data.t1_master_ns;
-        state.scale_factor = 1.0;
+        // Initialize PI servo
+        state.pi_integral = 0.0;
+        state.last_update_us = ptp_sync_data.t2_slave_us;
+        state.freq_offset_ppb = 0.0;
 
-        // Initialize Kalman filter
-        kalman_init();
-
-        printf("First Sync received (Kalman filter initialized)\n");
+        printf("First Sync received (PI servo initialized)\n");
 
         ptp_sync_data.sync_followup_ready = false;
         ptp_sync_data.delay_resp_ready = false;
@@ -617,10 +569,6 @@ void ptp_discipline_update(void) {
 
     // Discard early Delay_Resp until we have stable timing
     if (state.syncs_since_boot < 3) {
-        // Update crystal characterization (disabled - just save state)
-        state.prev_counter_value = ptp_sync_data.counter_at_sync;
-        state.prev_t1_master_ns = ptp_sync_data.t1_master_ns;
-
         ptp_sync_data.sync_followup_ready = false;
         ptp_sync_data.delay_resp_ready = false;
         return;
@@ -663,46 +611,93 @@ void ptp_discipline_update(void) {
                term1, term2, path_delay_raw);
         printf("            t2_ptp=%llu t1_master=%llu\n", t2_ptp_ns, ptp_sync_data.t1_master_ns);
         printf("            t4_master=%llu t3_ptp=%llu\n", ptp_sync_data.t4_master_ns, t3_ptp_ns);
+        const char *rx_type = ptp_sync_data.rx_hw_timestamp_valid ? "HW" :
+                              (ptp_sync_data.rx_used_average ? "AVG" : "SW");
+        const char *tx_type = ptp_sync_data.tx_hw_timestamp_valid ? "HW" : "SW";
         printf("HW LATENCY: RX=%+lldns (%s) TX=%+lldns (%s)\n",
                (long long)ptp_sync_data.rx_latency_ns,
-               ptp_sync_data.rx_hw_timestamp_valid ? "HW" : "SW",
+               rx_type,
                (long long)ptp_sync_data.tx_latency_ns,
-               ptp_sync_data.tx_hw_timestamp_valid ? "HW" : "SW");
+               tx_type);
     }
 #endif
 
     // Compact stats output every cycle
     if (state.discipline_updates % 10 == 0 || state.discipline_updates < 10) {
+        const char *rx_ts_type = ptp_sync_data.rx_hw_timestamp_valid ? "HW" :
+                                 (ptp_sync_data.rx_used_average ? "AVG" : "SW");
+        const char *tx_ts_type = ptp_sync_data.tx_hw_timestamp_valid ? "HW" : "SW";
         printf("D#%03lu: t1=%+6lld t2=%+6lld pd=%+6lld | RX=%3s/%6lld TX=%3s/%6lld | off=%+7lld lock=%c | scale=%.6f\n",
                state.discipline_updates,
                term1 / 1000,  // Convert to microseconds
                term2 / 1000,
                path_delay_raw / 1000,
-               ptp_sync_data.rx_hw_timestamp_valid ? "HW" : "SW",
+               rx_ts_type,
                (long long)(ptp_sync_data.rx_latency_ns / 1000),
-               ptp_sync_data.tx_hw_timestamp_valid ? "HW" : "SW",
+               tx_ts_type,
                (long long)(ptp_sync_data.tx_latency_ns / 1000),
                (long long)(state.offset_from_master_ns),
                state.locked ? 'Y' : 'N',
                state.scale_factor);
+
+        // PHASE 5: Detailed offset calculation breakdown
+        if (state.discipline_updates % 100 == 0) {
+            printf("\n=== OFFSET DIAGNOSTIC (Update #%lu) ===\n", state.discipline_updates);
+            printf("T1 (GM TX):    %llu ns\n", ptp_sync_data.t1_master_ns);
+            printf("T2 (Slave RX): %llu ns (corrected by %s %+lld ns)\n",
+                   t2_ptp_ns, rx_ts_type, -(long long)ptp_sync_data.rx_latency_ns);
+            printf("T3 (Slave TX): %llu ns (corrected by %s %+lld ns)\n",
+                   t3_ptp_ns, tx_ts_type, (long long)ptp_sync_data.tx_latency_ns);
+            printf("T4 (GM RX):    %llu ns\n", ptp_sync_data.t4_master_ns);
+            printf("\nForward path:  (t2-t1) = %llu - %llu = %+lld ns\n",
+                   t2_ptp_ns, ptp_sync_data.t1_master_ns,
+                   (int64_t)(t2_ptp_ns - ptp_sync_data.t1_master_ns));
+            printf("  - correction_sync = %+lld ns\n", ptp_sync_data.correction_sync_ns);
+            printf("  = term1 = %+lld ns\n", term1);
+            printf("\nReverse path:  (t4-t3) = %llu - %llu = %+lld ns\n",
+                   ptp_sync_data.t4_master_ns, t3_ptp_ns,
+                   (int64_t)(ptp_sync_data.t4_master_ns - t3_ptp_ns));
+            printf("  - correction_delay_resp = %+lld ns\n", ptp_sync_data.correction_delay_resp_ns);
+            printf("  = term2 = %+lld ns\n", term2);
+            printf("\nPath delay:    (term1 + term2) / 2 = (%+lld + %+lld) / 2 = %+lld ns\n",
+                   term1, term2, path_delay_raw);
+            printf("Mean path delay (filtered): %+lld ns\n", state.mean_path_delay_ns);
+            printf("\nOffset calculation:\n");
+            printf("  (t2 - t1) - mean_path_delay - correction_sync\n");
+            printf("  = %+lld - %+lld - %+lld\n",
+                   (int64_t)(t2_ptp_ns - ptp_sync_data.t1_master_ns),
+                   state.mean_path_delay_ns,
+                   ptp_sync_data.correction_sync_ns);
+            printf("  = %+lld ns (%.1f µs)\n",
+                   (long long)state.offset_from_master_ns,
+                   (double)state.offset_from_master_ns / 1000.0);
+            printf("\nExpected asymmetry from latencies:\n");
+            printf("  Slave RX latency: %+lld ns\n", ptp_sync_data.rx_latency_ns);
+            printf("  Slave TX latency: %+lld ns\n", ptp_sync_data.tx_latency_ns);
+            printf("  Net effect on offset: ~%+lld ns\n",
+                   -(ptp_sync_data.rx_latency_ns - ptp_sync_data.tx_latency_ns) / 2);
+            printf("=====================================\n\n");
+        }
     }
 
     // Filter path delay with exponential moving average
-    // Use KALMAN_ALPHA_LPF (α = 0.1) for 10 second time constant
+    // Use PATH_DELAY_ALPHA (α = 0.1) for 10 second time constant
     if (state.mean_path_delay_ns == 0) {
         state.mean_path_delay_ns = path_delay_raw;
     } else {
-        state.mean_path_delay_ns = (int64_t)((double)state.mean_path_delay_ns * (1.0 - KALMAN_ALPHA_LPF) +
-                                              (double)path_delay_raw * KALMAN_ALPHA_LPF);
+        state.mean_path_delay_ns = (int64_t)((double)state.mean_path_delay_ns * (1.0 - PATH_DELAY_ALPHA) +
+                                              (double)path_delay_raw * PATH_DELAY_ALPHA);
     }
 
     // 2. Calculate Offset from Master (IEEE 1588-2008 Eq. 4)
     // offset = (t2 - t1) - mean_path_delay - correctionSync
     // This tells us how much our slave PTP clock is ahead of master clock
+    // ASYMMETRY CORRECTION: Add empirical constant to align with 1PPS measurements
     double measured_offset =
         (double)((int64_t)(t2_ptp_ns - ptp_sync_data.t1_master_ns) -
         state.mean_path_delay_ns -
-        ptp_sync_data.correction_sync_ns);
+        ptp_sync_data.correction_sync_ns +
+        ASYMMETRY_CORRECTION_NS);
 
     // 3. Crystal Characterization (PIO counter)
     uint32_t elapsed_ticks;
@@ -729,122 +724,76 @@ void ptp_discipline_update(void) {
     int64_t crystal_error_ticks = (int64_t)elapsed_ticks - (int64_t)expected_ticks;
     state.crystal_error_ns = crystal_error_ticks * 12; // 12ns per tick
 
-    // Update scale factor for interpolation with HEAVY filtering
-    // Trust local crystal for short periods, only correct long-term drift
-    // Time constant: ~50 seconds (alpha = 0.02)
-    if (elapsed_ticks > 0) {
-        double new_scale = (double)expected_ticks / (double)elapsed_ticks;
+    // 4. PI Servo - Industry Standard Control Algorithm
+    // Calculate time delta for PI servo
+    uint64_t current_time_us = ptp_sync_data.t2_slave_us;
+    double dt_sec = (double)(current_time_us - state.last_update_us) / 1000000.0;
 
-        if (state.scale_factor == 0.0 || state.discipline_updates < 3) {
-            // Bootstrap: Use measured value directly
-            state.scale_factor = new_scale;
-        } else {
-            // Low-pass filter: 98% old, 2% new (50 second time constant)
-            // This filters out network jitter, tracks only crystal drift
-            state.scale_factor = state.scale_factor * 0.98 + new_scale * 0.02;
-        }
-    }
+    // Run PI servo to get frequency adjustment
+    int64_t freq_adj_ns = pi_servo_update(measured_offset, dt_sec);
 
-    // 4. Kalman Filter - Optimal state estimation
-    // Predict step: Estimate where we should be based on previous state
-    double dt = (double)master_delta_ns / 1e9;  // Time since last sync in seconds
-    kalman_predict(dt);
-
-    // Outlier rejection: Check if measurement is reasonable
-    // After predict, kalman_x[0] contains our best prediction
-    double predicted_offset = state.kalman_x[0];
-    double innovation = measured_offset - predicted_offset;  // How far off is measurement?
-    bool is_outlier = false;
-
-    // Adaptive outlier threshold: larger during initial convergence
-    // This allows system to converge from large initial offsets (e.g., 10ms at startup)
-    // without rejecting legitimate measurements during convergence
-    double outlier_threshold;
-    if (state.discipline_updates < 30) {
-        // Initial convergence: 10ms threshold (handles large startup offsets)
-        outlier_threshold = 10000000;
-    } else if (state.discipline_updates < 100) {
-        // Medium convergence: 3ms threshold
-        outlier_threshold = 3000000;
-    } else {
-        // Steady state: 1ms threshold (original value)
-        outlier_threshold = KALMAN_OUTLIER_THRESHOLD;
-    }
-
-    if (state.kalman_initialized && state.discipline_updates > 5) {
-        // Only reject outliers after initial Kalman startup
-        if (fabs(innovation) > outlier_threshold) {
-            is_outlier = true;
-            state.outliers_rejected++;
-
-            // Log first few outliers for debugging
-            if (state.outliers_rejected <= 10) {
-                printf("OUTLIER REJECTED: measured=%+.0fns predicted=%+.0fns innovation=%+.0fns (thresh=%.0fns)\n",
-                       measured_offset, predicted_offset, innovation, outlier_threshold);
-            }
-        }
-    }
-
-    // Determine timestamp quality for Kalman and correction factor adjustment
-    bool hw_timestamps_used = ptp_sync_data.rx_hw_timestamp_valid && ptp_sync_data.tx_hw_timestamp_valid;
-    double measurement_noise_r = hw_timestamps_used ? KALMAN_R_MEASUREMENT_HW : KALMAN_R_MEASUREMENT_SW;
-
-    // Update step: Correct prediction with noisy measurement (unless outlier)
-    if (!is_outlier) {
-        kalman_update(measured_offset, measurement_noise_r);
-    }
-
-    // Extract Kalman estimates (use prediction if we rejected measurement)
-    double filtered_offset_ns = state.kalman_x[0];
-    double filtered_freq_ppb = state.kalman_x[1];
+    // Update timestamp for next iteration
+    state.last_update_us = current_time_us;
 
     // Update state variables for logging/stats
-    state.offset_from_master_ns = (int64_t)filtered_offset_ns;
-    state.freq_offset_ppb = filtered_freq_ppb;
+    state.offset_from_master_ns = (int64_t)measured_offset;
+    // freq_offset_ppb already updated by pi_servo_update()
 
-    // 5. Update Free-Running PTP Clock
-    if (state.discipline_updates < 5) {
-        // First few cycles: Jump clock to establish rough alignment
-        state.ptp_clock_ns = ptp_sync_data.t1_master_ns + state.mean_path_delay_ns +
-                            ptp_sync_data.correction_sync_ns;
-        state.ptp_clock_update_us = ptp_sync_data.t2_slave_us;
-#if DEBUG_VERBOSE
-        printf("Jumping PTP clock to %llu ns (cycle %lu)\n", state.ptp_clock_ns, state.discipline_updates);
-#endif
+    // 5. Update Free-Running PTP Clock with Step Threshold (Industry Standard)
+
+    // Always bring clock up to date first
+    update_ptp_clock();
+
+    // Step threshold: During initial acquisition (first STEP_UPDATES_MAX updates)
+    bool allow_step = (state.discipline_updates < STEP_UPDATES_MAX);
+
+    // Check if offset exceeds step threshold AND stepping is allowed
+    if (allow_step && llabs(state.offset_from_master_ns) > STEP_THRESHOLD_NS) {
+        // STEP: Large offset - jump clock directly (industry standard approach)
+        // Positive offset means we're ahead, so subtract to bring us back
+        state.ptp_clock_ns -= state.offset_from_master_ns;
+
+        printf("STEP: Jumped clock by %+.1f µs (offset %+.1f µs exceeded threshold %.1f µs)\n",
+               -(double)state.offset_from_master_ns / 1000.0,  // Negative because we subtract
+               (double)state.offset_from_master_ns / 1000.0,
+               STEP_THRESHOLD_NS / 1000.0);
+
+        // Reset PI servo integral after step (clear accumulated error)
+        state.pi_integral = 0.0;
+        state.freq_offset_ppb = 0.0;
+        printf("STEP: Reset PI integral to 0\n");
+
+        // Correlation-friendly log: show step occurred
+        // Format: DISC|timestamp_us|seq|offset_ns|correction_ns|pi_integral|freq_ppb|hw_rx|hw_tx
+        printf("DISC|%llu|%lu|%+lld|%+lld|%+.1f|%+.1f|%d|%d|STEP\n",
+               time_us_64(),
+               state.discipline_updates,
+               (long long)state.offset_from_master_ns,
+               -(long long)state.offset_from_master_ns,  // Show correction as negative (we subtract)
+               state.pi_integral,
+               state.freq_offset_ppb,
+               ptp_sync_data.rx_hw_timestamp_valid ? 1 : 0,
+               ptp_sync_data.tx_hw_timestamp_valid ? 1 : 0);
+
     } else {
-        // Adaptive correction: more aggressive during initial convergence
-        update_ptp_clock();  // Bring clock up to date first
+        // SLEW: Small offset - use PI servo frequency adjustment
 
-        double correction_factor;
+        // Apply PI servo output as correction
+        int64_t correction = freq_adj_ns;
 
-        // Reduce correction factor for software timestamps (low confidence)
-        if (!hw_timestamps_used) {
-            // Software timestamp - minimal correction (2%)
-            correction_factor = 0.02;
-        } else if (state.discipline_updates < 30) {
-            // Initial convergence: 50% correction for faster settling
-            correction_factor = 0.5;
-        } else if (state.discipline_updates < 100) {
-            // Medium convergence: 30% correction
-            correction_factor = 0.3;
-        } else {
-            // Steady state: 20% correction (gentle, stable)
-            correction_factor = 0.2;
-        }
+        state.ptp_clock_ns -= correction;  // Subtract to bring us closer to master
 
-        int64_t correction = (int64_t)(filtered_offset_ns * correction_factor);
-        state.ptp_clock_ns -= correction;  // Subtract offset to bring us closer to master
-    }
-
-    // Derive scale_factor from Kalman frequency estimate
-    // scale_factor = 1.0 + (freq_offset_ppb / 1e9)
-    // But also apply heavy filtering to keep it stable
-    double kalman_scale = 1.0 + (filtered_freq_ppb / 1e9);
-    if (state.scale_factor == 0.0 || state.discipline_updates < 3) {
-        state.scale_factor = kalman_scale;
-    } else {
-        // Heavy filtering: 95% old, 5% new (20 second time constant)
-        state.scale_factor = state.scale_factor * 0.95 + kalman_scale * 0.05;
+        // Correlation-friendly log: parseable format for alignment with measurement data
+        // Format: DISC|timestamp_us|seq|offset_ns|correction_ns|pi_integral|freq_ppb|hw_rx|hw_tx
+        printf("DISC|%llu|%lu|%+lld|%+lld|%+.1f|%+.1f|%d|%d\n",
+               time_us_64(),                              // Monotonic timestamp (µs since boot)
+               state.discipline_updates,                  // Sequence number
+               (long long)state.offset_from_master_ns,    // Calculated offset
+               (long long)correction,                     // Correction applied (from PI servo)
+               state.pi_integral,                         // PI integral term (ns)
+               state.freq_offset_ppb,                     // Frequency offset (ppb)
+               ptp_sync_data.rx_hw_timestamp_valid ? 1 : 0,  // RX HW timestamp
+               ptp_sync_data.tx_hw_timestamp_valid ? 1 : 0); // TX HW timestamp
     }
 
     // 6. Lock Detection
@@ -872,7 +821,7 @@ void ptp_discipline_update(void) {
     // Update running statistics
     update_stats(&state.offset_stats, (double)state.offset_from_master_ns / 1000.0);  // Convert to µs
     update_stats(&state.path_delay_stats, (double)state.mean_path_delay_ns / 1000.0); // Convert to µs
-    update_stats(&state.scale_factor_stats, state.scale_factor * 1e6);  // Convert to ppm deviation from 1.0
+    update_stats(&state.scale_factor_stats, state.freq_offset_ppb);  // Store frequency offset (ppb)
 
     // Update EMA statistics for offset (5min, 15min, 30min windows)
     double offset_us = (double)state.offset_from_master_ns / 1000.0;
@@ -885,7 +834,7 @@ void ptp_discipline_update(void) {
     ptp_stats.offset_from_master_ns = state.offset_from_master_ns;
     ptp_stats.mean_path_delay_ns = state.mean_path_delay_ns;
     ptp_stats.freq_offset_ppb = state.freq_offset_ppb;
-    ptp_stats.scale_factor = state.scale_factor;
+    ptp_stats.scale_factor = 1.0;  // No longer used (PI servo controls frequency directly)
     ptp_stats.crystal_error_ns = state.crystal_error_ns;
     ptp_stats.crystal_ppm = (double)state.crystal_error_ns / 1000000.0;
     ptp_stats.sync_count = state.sync_count;
