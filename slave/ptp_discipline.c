@@ -56,7 +56,7 @@
 
 // PI Servo Parameters (industry standard values similar to LinuxPTP)
 #define PI_KP 0.7                    // Proportional gain (standard)
-#define PI_KI 0.0012                 // Integral gain (adjusted for 1Hz updates, 300x smaller)
+#define PI_KI 0.0004                 // Integral gain (moderate - 3x smaller than standard, gradual convergence)
 #define PI_MAX_INTEGRAL 1000000000   // Anti-windup: ±1 second
 #define PI_MAX_FREQ_ADJ 100000       // Max frequency adj: ±100µs per update
 
@@ -377,8 +377,9 @@ uint32_t ptp_discipline_get_outliers_rejected(void) {
  * Used by 1PPS scheduler to compensate for crystal frequency error
  */
 double ptp_discipline_get_scale_factor(void) {
-    // Use filtered crystal measurement (independent of PI servo, but smoothed)
+    // Use filtered crystal measurement (independent of PI servo, avoids feedback loop)
     // filtered_crystal_error_ns is EMA-filtered to reduce measurement noise
+    // This provides continuous frequency correction without interfering with aggressive P-term
     // Positive error = crystal runs fast (ahead)
 
     // Convert ns per second to ppm, then to scale factor
@@ -792,11 +793,12 @@ void ptp_discipline_update(void) {
                ptp_sync_data.tx_hw_timestamp_valid ? 1 : 0);
 
     } else {
-        // SLEW: Small offset - use full PI servo output
-        // PI servo provides discrete corrections (P + I terms)
-        // Crystal measurement provides continuous frequency tracking (via scale_factor)
+        // SLEW: Small offset - use P + tiny I term for discrete correction
+        // P term (Kp=0.7): Immediate response to phase offset (70% correction)
+        // Tiny I term (Ki=0.0001): Slowly eliminates steady-state error
+        // Crystal measurement provides continuous frequency tracking (via scale_factor, independent)
 
-        int64_t correction = freq_adj_ns;  // Full PI servo output
+        int64_t correction = freq_adj_ns;  // Full PI servo output (P + tiny I)
 
         state.ptp_clock_ns -= correction;  // Apply correction to bring us closer to master
 
