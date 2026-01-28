@@ -1,3 +1,0 @@
-[submodule "libraries/WIZnet-PICO-LWIP-C"]
-	path = libraries/WIZnet-PICO-LWIP-C
-	url = https://github.com/WIZnet-ioNIC/WIZnet-PICO-LWIP-C.git
