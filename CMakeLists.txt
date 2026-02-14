@@ -80,6 +80,7 @@ add_subdirectory(grandmaster)
 add_subdirectory(slave)
 # add_subdirectory(logger)  # ARCHIVED - superseded by measurement device
 add_subdirectory(measurement)
+add_subdirectory(ltsp)
 # add_subdirectory(final_phase_meter)  # ARCHIVED - superseded by measurement device
 # add_subdirectory(calibration_test)  # TEST - uncomment if needed for calibration
 #

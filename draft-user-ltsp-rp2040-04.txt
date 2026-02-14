@@ -1,0 +1,978 @@
+
+Network Working Group                                          R. User
+Internet-Draft                                          February 2026
+Intended status: Experimental
+Expires: August 2026
+
+             Lightweight Statistical Time Sync Protocol (LTSP)
+                    draft-user-ltsp-rp2040-04
+
+Abstract
+
+   This document specifies the Lightweight Statistical Time Sync
+   Protocol (LTSP), a one-way time distribution protocol designed for
+   embedded systems (specifically the RP2040 microcontroller) using
+   SPI-attached Ethernet controllers (e.g., W5500) in MACRAW mode.
+
+   LTSP mitigates the jitter inherent in software-based networking by
+   combining a "Deferred Timestamp" mechanism with a statistical
+   error decomposition model. The Source (Grandmaster) measures the
+   exact transmission time of a packet using PIO hardware capture
+   and embeds this precise timestamp in the *subsequent* packet.
+
+   The protocol operates across multiple time domains inherent in
+   the RP2040 architecture and explicitly addresses the calibration
+   relationships between them.
+
+Table of Contents
+
+   1.  Introduction
+   2.  Terminology
+   3.  Time Domains
+   4.  System Architecture
+   5.  Protocol Data Unit (PDU)
+   6.  Theory of Operation
+   7.  Error Decomposition Model
+   8.  Algorithms
+   9.  Holdover and Synchronization State
+   10. Implementation Appendix: RP2040 PIO Capture
+   11. Security Considerations
+   12. IANA Considerations
+   13. References
+
+1.  Introduction
+
+   Standard PTP (IEEE 1588) implementations on SPI-based Ethernet
+   chips often suffer from "Driver Jitter" -- the variable time
+   between the driver requesting a send and the packet actually
+   hitting the wire. On the RP2040 with a W5500, this jitter is
+   typically 50-200us depending on SPI clock speed and buffer
+   management, rendering sub-microsecond synchronization impossible
+   through conventional means.
+
+   LTSP solves this by treating the end-to-end path as a
+   composition of independently characterisable error sources.
+   It employs three key mechanisms:
+
+   1.  Deferred Timestamping: The precise hardware transmission
+       time of Packet N is sent in Packet N+1.
+
+   2.  Source Modeling: The Grandmaster (GM) broadcasts a linear
+       regression model (Bias + Drift) of its crystal relative to
+       GPS, providing both a time reference and a crystal
+       characterisation that the Receiver can use as a prior for
+       its own oscillator model.
+
+   3.  Error Decomposition: The total synchronization error is
+       decomposed into GM local processing delay, wire time, and
+       Receiver local processing delay. Each component has distinct
+       statistical properties and is filtered independently.
+
+   LTSP uses MACRAW mode on the W5500, bypassing the chip's
+   internal TCP/IP stack entirely. This eliminates a layer of
+   non-deterministic processing and gives direct control over
+   frame construction and timing.
+
+   Unlike PTP, LTSP is strictly one-way (Source to Receiver).
+
+1.1.  Protocol Parameters
+
+   +-------------------------+----------+----------------------------+
+   | Parameter               | Default  | Description                |
+   +-------------------------+----------+----------------------------+
+   | SYNC_INTERVAL           | 1.0 s    | Interval between packets   |
+   | MIN_FILTER_WINDOW (W)   | 120      | Samples in minimum filter  |
+   | REGRESSION_WINDOW        | 60       | 1PPS samples for LS fit    |
+   | HOLDOVER_TIMEOUT         | 30 s     | Max time without packets   |
+   | PATH_JUMP_THRESHOLD      | 10 us    | Min filter reset trigger   |
+   | SEQUENCE_GAP_MAX         | 3        | Max tolerated missing pkts |
+   | PIO_TICK_HZ              | 83.33e6  | Effective PIO counter rate |
+   | PIO_TICK_NS              | 12       | Duration of one counter    |
+   |                          |          |   decrement (3 PIO cycles) |
+   +-------------------------+----------+----------------------------+
+
+2.  Terminology
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL
+   NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and
+   "OPTIONAL" in this document are to be interpreted as described
+   in RFC 2119.
+
+   Grandmaster (GM): The time source. Disciplined to GPS 1PPS.
+
+   Receiver: The time consumer. Synchronizes its local clock to
+   the GM via received LTSP packets.
+
+   PIO Counter: A free-running counter maintained within an RP2040
+   PIO state machine, incrementing every PIO clock cycle. This is
+   the primary high-resolution time domain. See Section 3.
+
+   System Timer: The RP2040's built-in 64-bit microsecond timer
+   (TIMERAWL/TIMERAWH). A secondary, lower-resolution time domain.
+
+   T_pio: A timestamp captured in the PIO Counter domain.
+
+   T_sys: A timestamp read from the System Timer domain.
+
+   Model Epoch (T_epoch): The PIO Counter value at which the
+   Source's clock model parameters (a0, a1) are valid.
+
+3.  Time Domains
+
+   The RP2040 architecture presents multiple time measurement
+   sources with different characteristics. LTSP explicitly
+   identifies these domains and specifies which measurements
+   occur in which domain.
+
+3.1.  PIO Counter Domain (Primary)
+
+   Each PIO state machine can maintain a free-running counter
+   using the X scratch register. The counter program is a
+   three-instruction loop (decrement, check, loop) running at
+   the 250MHz PIO clock. Because each X decrement takes 3 PIO
+   cycles, the effective counter tick rate is 83.33MHz, giving
+   a resolution of 12ns per tick.
+
+   The PIO counter is 32 bits wide. At 83.33MHz this wraps
+   every approximately 51.5 seconds (2^32 * 12ns).
+   Implementations MUST track wraps in software, maintaining
+   a 32-bit upper half that increments on each wrap, yielding
+   a synthetic 64-bit PIO timestamp.
+
+   Wrap detection: The counter counts DOWN (jmp x--
+   decrements). A wrap is detected when the new counter value
+   is greater than the previous value. At 1Hz measurement rates
+   and a 51.5s wrap period, at most one wrap occurs between
+   consecutive measurements.
+
+   The GM uses two separate PIO blocks:
+     - PIO0: GPS 1PPS capture (SM0 counter + SM1 edge detect)
+     - PIO1: W5500 INTn capture (SM0 counter + SM1 edge detect)
+
+   Because these are independent PIO blocks with independent
+   X registers, their raw counter values CANNOT be directly
+   subtracted. The GM bridges between domains using GPS
+   nanosecond time: the 1PPS counter provides the crystal
+   calibration model, the INTn counter provides TX timing,
+   and the GPS time interpolation function converts both to
+   a common nanosecond time base.
+
+   The Receiver uses a single PIO block:
+     - PIO0 (or PIO1): W5500 INTn capture (SM0 counter +
+       SM1 edge detect)
+
+   The following measurements are captured in PIO Counter
+   domains:
+     - GPS 1PPS edge (GM only, PIO0)
+     - W5500 INTn edge for TX complete (GM only, PIO1)
+     - W5500 INTn edge for RX complete (Receiver only)
+
+   Within a single PIO block, timestamps share the same
+   crystal error and are directly commensurable. Across PIO
+   blocks on the GM, conversion via the GPS time model is
+   required.
+
+3.2.  System Timer Domain (Secondary)
+
+   The RP2040 system timer is a 64-bit counter incrementing at
+   1MHz (1us resolution), derived from the system clock via a
+   fixed divider. It does not wrap within any practical
+   operating period.
+
+   The following measurements are captured in the System Timer
+   domain:
+     - SPI transfer initiation (CPU records T_sys before
+       issuing SPI commands to the W5500)
+     - General-purpose software timestamps
+
+   System Timer measurements have lower resolution (1us vs 4ns)
+   and are subject to interrupt latency, as the CPU must
+   explicitly read the timer.
+
+3.3.  Cross-Domain Calibration
+
+   The PIO Counter and System Timer are both derived from the
+   same crystal oscillator. Their ratio is fixed and
+   deterministic (determined by clock divider configuration).
+   However, converting between domains requires knowing the
+   absolute relationship at a reference point.
+
+   Implementations SHOULD capture both the PIO counter value
+   and the System Timer value at each GPS 1PPS edge, providing
+   a cross-domain calibration point at 1Hz. Between calibration
+   points, the domains maintain a fixed relationship (no
+   relative drift, since both derive from the same source).
+
+   The cross-calibration uncertainty is bounded by the time
+   between the PIO capture (hardware, cycle-accurate) and the
+   software System Timer read in the interrupt handler
+   (subject to interrupt latency, typically 0.5-2us).
+
+   For measurements where only PIO-domain timestamps are
+   compared (1PPS vs INTn, INTn vs INTn across packets), no
+   cross-domain conversion is required. This is the preferred
+   mode of operation for high-precision calculations.
+
+3.4.  GPS Time Domain
+
+   GPS time is the absolute reference, accessible only through
+   the 1PPS pulse edge. The GM calibrates its PIO Counter
+   against GPS by counting PIO ticks between consecutive 1PPS
+   edges.
+
+   Expected ticks per second = PIO_TICK_HZ (83,333,333)
+   Actual ticks = T_pio[1PPS_N] - T_pio[1PPS_N-1]
+   Crystal error (ppb) = (Actual - Expected) / Expected * 1e9
+
+   This measurement is the foundation of the GM's clock model.
+
+3.5.  GPS Nanosecond Domain (Common Time Base)
+
+   Because the GM uses separate PIO blocks for 1PPS and INTn
+   capture, a common time base is needed to bridge between
+   them. The GM maintains a GPS nanosecond counter that:
+
+   1.  Resets to a second boundary at each GPS 1PPS edge.
+   2.  Interpolates between 1PPS edges using the System Timer
+       and the measured crystal drift (scale factor).
+   3.  Provides a get_gps_time_ns() function placed in SRAM
+       for deterministic, low-jitter execution.
+
+   All PDU timestamp fields (Prev_Tx_Timestamp, Model_Epoch,
+   Last_1PPS_Count, Source_Phase_Bias) are expressed in GPS
+   nanoseconds, not raw PIO ticks. This makes them directly
+   usable by the Receiver without knowing the GM's PIO
+   counter state.
+
+   The GPS nanosecond interpolation has approximately 1us
+   jitter (from System Timer resolution and interrupt latency).
+   This is the practical precision floor for absolute time on
+   the GM.
+
+   Last_1PPS_Interval remains in PIO ticks (single-SM
+   measurement within PIO0, no cross-block issue).
+
+4.  System Architecture
+
+4.1.  The Hardware Model (RP2040 + W5500)
+
+   Both Source and Receiver utilize dedicated PIO state machines
+   to capture the PIO counter value at hardware signal edges.
+
+   The W5500 is operated in MACRAW mode on Socket 0. In this
+   mode, the application constructs complete Ethernet frames
+   (including headers) and the W5500 transmits them without
+   TCP/IP processing. This provides more deterministic timing
+   than UDP mode and eliminates the W5500's internal protocol
+   processing jitter.
+
+   The W5500 INTn pin asserts (goes low) on TX completion and
+   RX frame arrival. This signal is monitored by a PIO state
+   machine, providing a hardware-precise timestamp of when the
+   frame left or arrived at the wire interface.
+
+4.2.  PIO State Machine Allocation
+
+   GM uses both PIO blocks (PIO0 and PIO1):
+
+     PIO0 (GPS discipline):
+       SM0: Free-running counter with pin-triggered push.
+            Counts DOWN at 83.33MHz (3-cycle loop at 250MHz).
+            Only pushes to FIFO when trigger pin goes high.
+       SM1: GPS 1PPS edge detector. Waits for rising edge
+            on GPIO 2, pulses trigger pin to signal SM0,
+            then raises CPU interrupt.
+
+     PIO1 (W5500 hardware timestamps):
+       SM0: Free-running counter (counter_simple program).
+            Counts DOWN at 83.33MHz. Read atomically by
+            pausing SM, executing mov/push, reading FIFO.
+       SM1: W5500 INTn edge detector. Waits for falling
+            edge on GPIO 21, pushes marker (0xFFFFFFFF)
+            to FIFO. Software reads SM0 counter on marker.
+
+   Receiver uses one PIO block:
+
+     PIO0 (or PIO1):
+       SM0: Free-running counter (counter_simple program).
+       SM1: W5500 INTn edge detector (int_timestamp program).
+
+   The counter and edge detector are separate SMs that
+   communicate via FIFO markers (INTn) or GPIO pin pulses
+   (1PPS). Each SM's X register is an independent counter.
+   Cross-SM comparison within a PIO block uses delta
+   calculation; cross-PIO-block comparison on the GM uses
+   GPS nanosecond time conversion.
+
+4.3.  Clock Domain Summary
+
+   The following diagram shows the measurement points and
+   their time domains:
+
+   GM Side:
+     GPS 1PPS -----> [PIO0 capture] ----> T_pio0_1pps
+     GPS 1PPS -----> [get_gps_time_ns] -> T_gps_ns (interpolated)
+     CPU SPI init -> [System Timer read] -> T_sys_spi_tx
+     W5500 INTn ---> [PIO1 capture] ----> T_pio1_tx
+     T_pio1_tx ----> [convert via GPS] -> T_gps_tx_ns
+
+   Wire:
+     Physical propagation + switch queuing
+
+   Receiver Side:
+     W5500 INTn ---> [PIO capture] -----> T_pio_rx
+     CPU SPI read -> [System Timer read] -> T_sys_spi_rx
+
+   Primary path (GPS nanosecond domain):
+     T_gps_tx_ns -(wire)-> T_pio_rx (converted to ns)
+
+   The GM converts T_pio1_tx to GPS nanoseconds using
+   get_gps_time_ns() and the HW timestamp correlation
+   (measuring the delta between SPI initiation and INTn).
+   This GPS-ns value is what appears in the PDU's
+   Prev_Tx_Timestamp field.
+
+   Local processing characterisation (mixed domain):
+     GM:       T_pio1_tx - T_sys_spi_tx  (requires cross-cal)
+     Receiver: T_sys_spi_rx - T_pio_rx   (requires cross-cal)
+
+5.  Protocol Data Unit (PDU)
+
+   LTSP uses a fixed-size payload encapsulated in a raw Ethernet
+   frame (MACRAW). The EtherType is 0x88B5 (IEEE Local
+   Experimental, suitable for LAN-scoped protocols).
+
+   Ethernet Frame:
+     Destination MAC: FF:FF:FF:FF:FF:FF (broadcast)
+     Source MAC: GM's MAC address
+     EtherType: 0x88B5
+     Payload: LTSP PDU (56 bytes without auth, 72 with auth)
+
+   Multi-byte fields are Big-Endian.
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |    Version    |     Flags     |      Sequence Number (N)      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                                                               |
+   +                  Prev_Tx_Timestamp (T_gps_tx[N-1])            +
+   |                       (64-bit GPS nanoseconds)                |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                                                               |
+   +                  Model_Epoch (T_epoch)                        +
+   |                       (64-bit GPS nanoseconds)                |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                                                               |
+   +                  Source_Phase_Bias (a0)                       +
+   |                   (64-bit signed, nanoseconds)                |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                     Source_Freq_Drift (a1)                    |
+   +                     (32-bit float, ppb)                       +
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                     Model_Uncertainty (Sigma)                 |
+   +                     (32-bit float, nanoseconds)               +
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                                                               |
+   +                  Last_1PPS_Count                              +
+   |                       (64-bit GPS nanoseconds)                |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                     Last_1PPS_Interval                        |
+   +                     (32-bit, PIO ticks)                       +
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                     GM_Local_Processing_Mean                  |
+   +                     (32-bit, nanoseconds)                     +
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                     HMAC (optional, 128-bit truncated)        |
+   +                                                               +
+   |                                                               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+   Field Definitions:
+
+   Version (8 bits): Protocol version. This specification defines
+     Version 1. Receivers MUST silently discard packets with
+     unrecognized versions.
+
+   Flags (8 bits):
+     Bit 0: AUTH. Set if the HMAC field is present.
+     Bit 1: HOLDOVER. Set if the GM is in holdover (GPS lost).
+     Bit 2: LEAP_PENDING. Set if a leap second is imminent.
+     Bit 3: CRYSTAL_CLASS. 0 = unknown/different, 1 = GM and
+       Receiver share the same crystal type. When set, the
+       Receiver MAY use a1 as a prior for its own frequency
+       estimation.
+     Bits 4-7: Reserved, MUST be zero.
+
+   Sequence Number (N) (16 bits): The sequence number of the
+     *current* packet. Wraps from 65535 to 0. See Section 6.3.
+
+   Prev_Tx_Timestamp (64 bits): The GPS nanosecond time at
+     which packet (N-1) was transmitted, derived from the W5500
+     INTn hardware timestamp converted to GPS time via
+     get_gps_time_ns() and HW timestamp correlation. This is
+     the "Deferred Timestamp". For the first packet after
+     startup (or when no valid prior timestamp exists), this
+     field MUST be set to all zeros, and the Receiver MUST
+     discard it.
+
+   Model_Epoch (T_epoch) (64 bits): The GPS nanosecond time
+     at which a0 and a1 are valid. Defines the reference point
+     for the linear clock model. Typically set to the GPS time
+     at PDU construction.
+
+   Source_Phase_Bias (a0) (64 bits, signed): The GM's estimated
+     phase offset from GPS at T_epoch, expressed in nanoseconds.
+     Positive values indicate the GM's clock is ahead of GPS.
+
+   Source_Freq_Drift (a1) (32 bits, IEEE 754 float): The GM's
+     estimated frequency error in parts-per-billion (ppb) at
+     T_epoch. Positive values indicate the GM clock runs fast.
+
+   Model_Uncertainty (Sigma) (32 bits, IEEE 754 float): Standard
+     deviation of the GM's regression residuals, in nanoseconds.
+
+   Last_1PPS_Count (64 bits): The GPS nanosecond time at the
+     most recent GPS 1PPS rising edge. This provides the raw
+     observable for receivers that wish to perform independent
+     analysis.
+
+   Last_1PPS_Interval (32 bits, unsigned): The number of PIO
+     ticks counted between the two most recent 1PPS edges. The
+     nominal value is PIO_TICK_HZ (83,333,333). Deviations
+     from nominal directly indicate instantaneous crystal
+     frequency error. 32 bits is sufficient: at 83.33MHz, one
+     second is ~83.3M ticks, well within uint32 range. This
+     field remains in PIO ticks (single PIO block measurement).
+
+   GM_Local_Processing_Mean (32 bits, unsigned): Running mean
+     of the GM's local processing delay in nanoseconds, defined
+     as the interval from SPI send initiation to INTn assertion.
+     This measurement is inherently mixed-domain (System Timer
+     to PIO) and has microsecond-level accuracy. The Receiver
+     uses this to decompose total path delay. See Section 7.
+
+   HMAC (128 bits, optional): Truncated HMAC-SipHash-2-4
+     computed over all preceding bytes. Present only when AUTH
+     flag is set. See Section 11.
+
+5.1.  PDU Size
+
+   Without authentication: 56 bytes payload.
+   With authentication: 72 bytes payload.
+   Total on wire (MACRAW): 56 + 14 (Eth header) + 4 (FCS)
+     = 74 bytes without auth, 90 bytes with auth.
+
+   The W5500 pads frames to the Ethernet minimum of 64 bytes
+   (including header and FCS). The 56-byte payload exceeds this
+   minimum, so no padding is required.
+
+6.  Theory of Operation
+
+6.1.  Grandmaster (Source) Logic
+
+   The GM maintains two concurrent processes:
+
+   1PPS Discipline (interrupt-driven, Core 0, PIO0):
+   1.  PIO0 SM1 detects GPS 1PPS rising edge on GPIO 2.
+   2.  SM1 pulses trigger pin (GPIO 22) to signal SM0.
+   3.  SM0 snapshots X counter to FIFO on trigger.
+   4.  CPU ISR reads counter from FIFO, captures System Timer
+       immediately at entry (time_us_64()).
+   5.  ISR computes elapsed ticks (handling countdown wrap),
+       1PPS interval, crystal error, updates GPS nanosecond
+       counter to next second boundary.
+   6.  ISR stores phase error sample for regression.
+   7.  ISR sets flag for main loop.
+
+   Transmission Loop (main loop, 1Hz, Core 1, PIO1):
+   1.  If 1PPS flag set: recompute least-squares regression
+       over the 1PPS circular buffer. Update a0, a1, Sigma.
+   2.  Construct Packet N:
+       a.  Set T_epoch to current GPS nanosecond time
+           (get_gps_time_ns()).
+       b.  Populate Prev_Tx_Timestamp with stored T_gps_tx
+           from Packet N-1 (or zero if N=0). This is a GPS
+           nanosecond value converted from the PIO1 HW
+           timestamp of the previous TX.
+       c.  Populate a0, a1, Sigma from regression model,
+           re-referenced to T_epoch (in nanoseconds).
+       d.  Populate Last_1PPS_Count (GPS ns of most recent
+           1PPS) and Last_1PPS_Interval (PIO ticks, from
+           PIO0 single-SM measurement).
+       e.  Populate GM_Local_Processing_Mean from running
+           statistics (in nanoseconds).
+   3.  Record T_sys_spi_tx (System Timer) immediately before
+       initiating SPI transfer.
+   4.  Send frame via SPI to W5500 in MACRAW mode.
+   5.  PIO1 SM1 detects W5500 INTn falling edge, pushes
+       marker. Software reads PIO1 SM0 counter atomically.
+   6.  Convert HW timestamp to GPS nanoseconds:
+       T_gps_tx = get_gps_time_ns() adjusted by the delta
+       between SPI initiation and INTn assertion.
+       Store for use in Packet N+1.
+   7.  Update GM local processing statistics:
+       LP_gm = T_gps_tx - T_sys_spi_tx (in nanoseconds)
+       This has microsecond-level accuracy.
+
+6.2.  Receiver Logic
+
+   The Receiver maintains four state components:
+
+   - Path Delay Estimator (minimum filter on wire time)
+   - Remote Clock Model (most recent a0, a1, T_epoch, Sigma)
+   - Error Decomposition Model (Section 7)
+   - Synchronization State Machine (Section 9)
+
+   Reception Loop:
+
+   1.  PIO SM1 detects W5500 INTn falling edge, pushes marker.
+       Software polls FIFO, reads SM0 counter atomically.
+       Stores HW timestamp in circular buffer.
+   2.  CPU reads frame via SPI from W5500 MACRAW buffer.
+   3.  Record T_sys_spi_rx (System Timer) at completion of
+       SPI read.
+   4.  Correlate HW timestamp with SPI read time to find
+       the INTn timestamp for this specific frame.
+   5.  Parse LTSP PDU. Validate Version and Sequence (Sec 6.3).
+   6.  If AUTH flag set, verify HMAC. Discard on failure.
+   7.  Store {Sequence_N, T_pio_rx (64-bit extended),
+       T_sys_spi_rx}.
+   8.  Store Remote Clock Model {a0, a1, T_epoch, Sigma}.
+
+   Deferred Processing:
+
+   1.  Extract Prev_Tx_Timestamp from Packet N: T_gps_tx[N-1].
+       This is already in GPS nanoseconds.
+   2.  If T_gps_tx[N-1] is zero, skip (no valid deferred ts).
+   3.  Retrieve locally stored T_pio_rx[N-1], convert to
+       nanoseconds: T_rx_ns = T_pio_rx[N-1] * PIO_TICK_NS.
+   4.  If T_pio_rx[N-1] not found (packet loss), skip.
+   5.  Perform error decomposition (Section 7).
+   6.  Update minimum filter on estimated wire time.
+   7.  Compute clock offset.
+
+6.3.  Sequence Number Handling
+
+   The Sequence Number is a 16-bit unsigned integer that
+   increments by 1 per packet, wrapping from 65535 to 0.
+
+   On reception of Packet N, the Receiver MUST:
+
+   1.  Compute expected = (last_received + 1) mod 65536.
+   2.  If match: process normally.
+   3.  If gap is 1 to SEQUENCE_GAP_MAX (default 3): accept,
+       mark intermediates as lost.
+   4.  If gap exceeds SEQUENCE_GAP_MAX: protocol restart.
+       Clear timestamp table and minimum filter.
+   5.  If sequence appears to go backward (accounting for
+       wrap): discard as duplicate/stale.
+
+   The first packet after startup is always accepted.
+
+7.  Error Decomposition Model
+
+   The total one-way delay from GM to Receiver is composed of
+   three independent components:
+
+     D_total = D_gm_local + D_wire + D_rx_local
+
+   Where:
+
+   D_total = T_rx_ns[N-1] - T_gps_tx[N-1]
+     where T_rx_ns = T_pio_rx * PIO_TICK_NS (Receiver's local
+     nanoseconds) and T_gps_tx is from the PDU (already GPS
+     nanoseconds). See Section 7.2.
+
+   D_gm_local: The delay from the GM's SPI send initiation to
+     the frame appearing on the wire (in nanoseconds). This
+     includes SPI transfer time and W5500 internal processing.
+     The GM characterises this and reports
+     GM_Local_Processing_Mean in the PDU (nanoseconds).
+
+   D_wire: Physical propagation time plus any switch queuing
+     delay. This is the only component that varies due to
+     network conditions. The minimum filter (Section 8.1)
+     operates on this component.
+
+   D_rx_local: The delay from the frame arriving at the
+     Receiver's W5500 wire interface to the INTn assertion.
+     This is the W5500's internal receive processing time.
+     The Receiver measures this as:
+       D_rx_local_approx = T_sys_spi_rx - cross_cal(T_pio_rx)
+     Note: This overestimates D_rx_local because it includes
+     the CPU's SPI read time. The W5500 INTn-to-SPI-readable
+     delay is a subset of this measurement.
+
+7.1.  Component Statistics
+
+   Each component has distinct statistical properties:
+
+   D_gm_local:
+     - Approximately constant for a given SPI clock speed and
+       frame size.
+     - Small variance, primarily from SPI bus contention.
+     - Reported by GM as a running mean. Receiver treats this
+       as a known constant with microsecond uncertainty.
+
+   D_wire:
+     - Has a constant floor (physical propagation, ~5ns/m).
+     - One-sided positive noise from switch queuing.
+     - The minimum over a window estimates the floor.
+     - On a direct crossover link, D_wire is effectively
+       constant.
+
+   D_rx_local:
+     - Approximately constant for a given W5500 configuration.
+     - The Receiver characterises its own distribution over
+       time.
+     - Can be estimated by observing the variance in
+       (T_sys_spi_rx - T_pio_rx) across packets.
+
+7.2.  Cross-Clock Delay Calculation
+
+   The GM's Prev_Tx_Timestamp is already in GPS nanoseconds
+   (converted by the GM using get_gps_time_ns() and HW
+   timestamp correlation). The Receiver's T_pio_rx is in the
+   Receiver's local PIO counter domain.
+
+   To compute D_total, the Receiver converts its local PIO
+   timestamp to nanoseconds and compares:
+
+   1.  T_gps_tx[N-1] is directly available from the PDU's
+       Prev_Tx_Timestamp field (already GPS nanoseconds).
+
+   2.  Convert Receiver's T_pio_rx[N-1] to nanoseconds:
+         T_rx_ns = T_pio_rx[N-1] * PIO_TICK_NS (= 12ns)
+       This is in the Receiver's local crystal domain.
+
+   3.  D_total = T_rx_ns[N-1] - T_gps_tx[N-1]
+       This includes the Receiver's crystal error relative
+       to GPS. During initial acquisition, the minimum filter
+       extracts the stable floor despite this error.
+
+   4.  As the Receiver accumulates measurements, it can
+       estimate its own crystal drift and correct T_rx_ns.
+       For v0.1, the Receiver does not discipline its clock;
+       it reports raw offsets for offline analysis.
+
+   The key simplification of the GPS-nanosecond approach is
+   that the GM has already performed the PIO-to-GPS conversion.
+   The Receiver only needs to convert its own PIO timestamps
+   to nanoseconds (a simple multiply by 12), not reconstruct
+   the GM's internal PIO counter state.
+
+7.3.  Using GM Crystal Model as Receiver Prior
+
+   When the CRYSTAL_CLASS flag is set, the Receiver knows that
+   the GM and Receiver use the same crystal type. The GM's
+   measured frequency drift (a1) is then informative about the
+   Receiver's own crystal behaviour.
+
+   The Receiver MAY use a1 as an initial estimate for its own
+   frequency correction, reducing convergence time. As the
+   Receiver accumulates its own offset measurements, it
+   refines this estimate and the prior is gradually replaced
+   by direct observation.
+
+   This is most valuable during initial acquisition and after
+   holdover events, where the Receiver has no recent
+   measurements of its own drift rate.
+
+8.  Algorithms
+
+8.1.  Minimum Filter (The "Lucky Packet" Strategy)
+
+   The minimum filter operates on the estimated wire time
+   component D_wire, not the total delay. If the error
+   decomposition in Section 7 is not yet available (initial
+   acquisition), it operates on D_total as a fallback.
+
+   State:
+     - Circular buffer B of size W (default 120)
+     - Write index i
+     - Current minimum D_min and its age
+
+   Update(D_wire):
+     B[i] = D_wire
+     i = (i + 1) mod W
+     If D_wire <= D_min:
+       D_min = D_wire
+       D_min_age = 0
+     Else:
+       D_min_age = D_min_age + 1
+
+     If D_min_age >= W:
+       D_min = min(B)  // Full scan, oldest sample expired
+       D_min_age = 0
+
+   Path Reroute Detection:
+     If a newly computed D_min exceeds the previous D_min by
+     more than PATH_JUMP_THRESHOLD (default 10us), log a path
+     change event and reset the filter.
+
+   Output: Wire_Delay_Est = D_min
+
+8.2.  Source GPS Regression (Least Squares)
+
+   The GM maintains a circular buffer of REGRESSION_WINDOW
+   (default 60) GPS 1PPS phase error measurements and fits a
+   linear model using ordinary least squares.
+
+   Let the buffer contain N samples {(t_k, e_k)} where:
+     - t_k is the PIO counter value at the k-th 1PPS edge
+     - e_k = Expected_ticks - Actual_interval_ticks
+       (the phase error in PIO ticks, where Expected_ticks
+       = PIO_TICK_HZ = 83,333,333)
+
+   For numerical stability, times are relative to the first
+   sample in the buffer:
+
+     tau_k = t_k - t_0
+
+   The least-squares fit:
+
+     a1 = (N * sum(tau_k * e_k) - sum(tau_k) * sum(e_k))
+          / (N * sum(tau_k^2) - sum(tau_k)^2)
+
+     a0 = mean(e_k) - a1 * mean(tau_k)
+
+   Re-referenced to T_epoch before transmission:
+
+     a0_tx = a0 + a1 * (T_epoch - t_0)
+
+   Model uncertainty:
+
+     Sigma = sqrt( sum((e_k - a0 - a1*tau_k)^2) / (N - 2) )
+
+8.2.1.  Incremental Computation
+
+   The GM MAY maintain running sums (S_t, S_e, S_tt, S_te)
+   and update incrementally as new samples arrive and old
+   samples are evicted. Use double precision for running sums.
+
+   Implementations SHOULD recompute from scratch every
+   REGRESSION_WINDOW cycles to prevent floating-point drift.
+
+8.2.2.  GPS Signal Loss
+
+   If the GPS 1PPS signal is lost:
+
+   1.  Set the HOLDOVER flag.
+   2.  Continue transmitting using the last valid model.
+   3.  Inflate Sigma on each packet:
+
+         Sigma_holdover = Sigma_last + (a1_uncertainty * T_elapsed)
+
+   4.  If GPS lost for more than 300 seconds, set Sigma to
+       the sentinel value 1e9 (unreliable).
+
+9.  Holdover and Synchronization State
+
+   The Receiver maintains a state machine:
+
+   INIT:
+     - Startup or protocol restart.
+     - Collecting initial samples. No clock output.
+     - Transition to ACQUIRING after 3 consecutive valid
+       packets with valid deferred timestamps.
+
+   ACQUIRING:
+     - Minimum filter populating, may not have converged.
+     - Clock output available, flagged as low quality.
+     - Transition to LOCKED after W/2 filter samples AND
+       Sigma < 4000 nanoseconds (4us).
+
+   LOCKED:
+     - Steady state. Clock output valid.
+     - Remains LOCKED while:
+       (a) Packets arrive within HOLDOVER_TIMEOUT, AND
+       (b) GM HOLDOVER flag not set, AND
+       (c) Sigma below threshold.
+     - Transitions to HOLDOVER if any condition fails.
+
+   HOLDOVER:
+     - No valid packets or GM in holdover.
+     - Extrapolate using last known model and a1 (or GM a1
+       as prior if CRYSTAL_CLASS set).
+     - Uncertainty grows linearly.
+     - After HOLDOVER_TIMEOUT: transition to INIT, flag
+       clock output invalid.
+
+9.1.  Receiver Clock Discipline
+
+   Phase Step:
+     Apply full offset when |Offset| > 1ms. Suitable for
+     initial acquisition.
+
+   Frequency Steering:
+     PI controller for steady state:
+
+       freq_adj = Kp * Offset + Ki * integral(Offset)
+
+     Integral MUST be bounded (anti-windup).
+     Starting values: Kp = 0.1, Ki = 0.01. These require
+     tuning to the specific crystal and thermal environment.
+
+10.  Implementation Appendix: RP2040 PIO Programs
+
+   The existing implementation uses three PIO programs,
+   tested on real hardware. These are the authoritative
+   reference; the illustrative program in earlier drafts
+   of this specification is superseded.
+
+10.1.  counter_simple (Free-Running Counter)
+
+   .program counter_simple
+   .wrap_target
+       mov x, ~null              ; Load 0xFFFFFFFF into X
+   counter_loop:
+       jmp x-- counter_loop [2]  ; Decrement X, loop
+                                 ; 3 cycles total: jmp=1, delay=2
+   .wrap
+
+   Runs at 250MHz PIO clock. The 3-cycle loop produces an
+   effective tick rate of 83.33MHz (12ns per X decrement).
+   Counter counts DOWN from 0xFFFFFFFF, wrapping every ~51.5s.
+
+   To read the current value atomically, software pauses the
+   SM, executes mov isr,x and push via pio_sm_exec(), reads
+   the FIFO, then re-enables the SM. This pause is <1us.
+
+10.2.  counter_with_pin_trigger (GPS 1PPS Counter, GM only)
+
+   .program counter_with_pin_trigger
+   .wrap_target
+   loop:
+       jmp x--, check_pin    ; Decrement counter
+   check_pin:
+       jmp pin snapshot       ; If trigger pin high, snapshot
+       jmp loop               ; Otherwise keep counting
+   snapshot:
+       mov isr, x             ; Snapshot counter value
+       push block             ; Push to FIFO (blocking)
+   wait_clear:
+       jmp pin wait_clear     ; Wait for trigger pin low
+       jmp loop               ; Back to counting
+   .wrap
+
+   Same tick rate as counter_simple (3-cycle main loop =
+   83.33MHz = 12ns/tick). Only pushes to FIFO when a trigger
+   pin goes high. This is signaled by SM1 (pps_edge) via a
+   GPIO pulse, eliminating continuous DMA. Bus usage is
+   250 million times less than a continuously-pushing counter.
+
+10.3.  pps_edge_with_pin_signal (GPS PPS Detector, GM only)
+
+   .program pps_edge_with_pin_signal
+   .wrap_target
+       wait 0 gpio 2         ; Wait for GPS PPS low
+       wait 1 gpio 2         ; Wait for rising edge
+       set pins, 1           ; Pulse trigger pin high
+       nop [7]               ; Hold 8 cycles (32ns)
+       set pins, 0           ; Trigger pin low
+       irq wait 1            ; CPU interrupt (blocking)
+   .wrap
+
+   Detects GPS 1PPS rising edge and signals SM0 via a GPIO
+   pin pulse. The 32ns pulse guarantees SM0 sees it within
+   one iteration of its 3-cycle loop. CPU IRQ handler
+   acknowledges the interrupt to allow the next detection.
+
+10.4.  int_timestamp (W5500 INTn Detector)
+
+   .program int_timestamp
+   .wrap_target
+       wait 1 pin 0          ; Wait for INT high (idle)
+       wait 0 pin 0          ; Wait for INT low (event)
+       mov isr, ~null        ; ISR = 0xFFFFFFFF (marker)
+       push noblock          ; Push marker to FIFO
+   .wrap
+
+   Detects W5500 INTn falling edge. Pushes a marker value
+   (0xFFFFFFFF) to the FIFO. Software detects the marker
+   and immediately reads the counter SM atomically. Latency
+   from INTn edge to counter read is <1us.
+
+   The marker approach avoids the need for the edge detector
+   to share a counter with another SM. Each SM has its own
+   independent X register.
+
+10.5.  CPU Interrupt and Polling Handlers
+
+   GPS 1PPS (interrupt-driven):
+   1.  Captures System Timer immediately at ISR entry.
+   2.  Reads counter value from SM0 FIFO.
+   3.  Computes elapsed ticks (handling countdown wrap).
+   4.  Updates GPS nanosecond counter.
+   5.  Stores phase error for regression.
+
+   W5500 INTn (polling):
+   1.  Main loop polls SM1 FIFO for marker.
+   2.  On marker: atomically reads SM0 counter.
+   3.  Stores in circular buffer (16 entries, 100ms max age).
+   4.  Direction-filtered correlation matches timestamps
+       to TX or RX events.
+
+   Implementation Note: The X register counts DOWN (jmp x--
+   decrements). Wrap is detected when new > previous. For
+   elapsed calculation: if prev > curr, elapsed = prev - curr;
+   if prev < curr (wrap), elapsed = prev + (0xFFFFFFFF - curr) + 1.
+
+11.  Security Considerations
+
+   LTSP is a clear-text, unauthenticated protocol by default.
+
+11.1.  Authentication
+
+   When AUTH is set, the HMAC field contains a 128-bit
+   truncated HMAC-SipHash-2-4 over all preceding PDU bytes.
+
+   SipHash-2-4 is chosen for Cortex-M0+ efficiency (~2us per
+   packet vs 15-20us for SHA256).
+
+   Key distribution is out of scope. Static pre-shared keys
+   are sufficient for most deployments. Implementations SHOULD
+   support key rotation with a configurable transition window.
+
+11.2.  Threat Model
+
+   Designed for isolated or lightly-managed LANs:
+
+   - Spoofed packets: mitigated by HMAC when AUTH enabled.
+   - Replayed packets: mitigated by sequence validation.
+   - Packet suppression: causes HOLDOVER, not mitigated.
+
+12.  IANA Considerations
+
+   This document requests no IANA actions. EtherType 0x88B5
+   is used per IEEE 802 Local Experimental assignment.
+
+13.  References
+
+13.1.  Normative References
+
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to Indicate
+              Requirement Levels", BCP 14, RFC 2119, March 1997.
+
+13.2.  Informative References
+
+   [IEEE1588] IEEE, "IEEE Standard for a Precision Clock
+              Synchronization Protocol for Networked Measurement
+              and Control Systems", IEEE Std 1588-2019, 2020.
+
+   [MILLS]    Mills, D., "Internet Time Synchronization: The
+              Network Time Protocol", IEEE Trans. Communications,
+              vol. 39, no. 10, pp. 1482-1493, October 1991.
+
+   [RP2040]   Raspberry Pi Ltd., "RP2040 Datasheet", 2021.
+
+   [W5500]    WIZnet, "W5500 Datasheet", Version 1.0.9, 2013.
+
+   [SIPHASH]  Aumasson, J-P. and D. Bernstein, "SipHash: a fast
+              short-input PRF", 2012.
+
+Author's Address
+
+   R. User
+   Email: TBD

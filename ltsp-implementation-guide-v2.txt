@@ -1,0 +1,276 @@
+
+LTSP Implementation Guide: Design Decisions and Scope
+======================================================
+Companion to draft-user-ltsp-rp2040-04
+February 2026
+
+1. Implementation Scope (v0.1)
+------------------------------
+
+The goal of v0.1 is a minimal end-to-end pipeline that validates
+the deferred timestamp mechanism, the PIO counter capture, and
+the error decomposition model. It produces measurable data for
+offline analysis.
+
+  v0.1 (this build):
+    - GM: GPS 1PPS capture via PIO free-running counter,
+      least-squares regression, LTSP frame construction and
+      transmission via MACRAW, deferred timestamp capture,
+      local processing delay measurement
+    - Receiver: frame reception with PIO timestamp capture,
+      deferred delay calculation, minimum filter, error
+      decomposition, offset computation, USB serial reporting
+    - Direct crossover or single-switch topology
+
+  v0.2 (deferred):
+    - Holdover state machine (Section 9 of the RFC)
+    - Frequency steering with PI controller
+    - AUTH (HMAC-SipHash)
+    - Corrected 1PPS output via PIO for oscilloscope validation
+
+  v0.3 (deferred):
+    - LEAP_PENDING handling
+    - Multi-receiver considerations
+    - Key rotation
+    - Allan deviation analysis for crystal characterisation
+
+2. Design Decisions
+-------------------
+
+2.1. Language and Platform
+
+  Decision: C with the Raspberry Pi Pico SDK (pico-sdk).
+
+  Rationale: PIO, DMA, and interrupt infrastructure requires
+  direct SDK access. MicroPython adds unpredictable latency.
+  Arduino-Pico wraps the SDK but hides critical details.
+
+  W5500 access: MACRAW mode via direct SPI register access.
+  The WIZnet ioLibrary_Driver can be used for initialisation
+  and socket setup, but frame send/receive in MACRAW mode is
+  simple enough to implement directly if preferred.
+
+2.2. Project Structure
+
+  ltsp/
+    CMakeLists.txt
+    common/
+      ltsp_pdu.h              -- PDU structure, pack/unpack
+      ltsp_pdu.c
+      pio_timestamp.h         -- PIO program and counter management
+      pio_timestamp.c
+      pio_timestamp.pio       -- PIO assembly for timestamp capture
+      w5500_macraw.h          -- W5500 MACRAW send/receive
+      w5500_macraw.c
+    gm/
+      CMakeLists.txt
+      main.c
+      gps_discipline.h        -- 1PPS capture and regression
+      gps_discipline.c
+    receiver/
+      CMakeLists.txt
+      main.c
+      min_filter.h            -- Minimum delay filter
+      min_filter.c
+      error_decomp.h          -- Error decomposition model
+      error_decomp.c
+    test/
+      CMakeLists.txt          -- Host-side tests (no pico-sdk)
+      test_pdu.c
+      test_min_filter.c
+      test_regression.c
+      test_sequence.c
+
+2.3. PIO Timestamp Capture
+
+  Decision: Reuse the existing tested PIO programs from the
+  PTP implementation. These run on real hardware and are
+  preferred over any illustrative examples in the RFC.
+
+  Counter tick rate: 83.33MHz (250MHz PIO clock / 3-cycle loop).
+  Each X decrement = 12ns. This differs from the RFC's
+  original 4ns assumption; the RFC has been updated to match.
+
+  The X register counts DOWN (jmp x-- decrements). Wrap is
+  detected when new value > previous value. Elapsed ticks:
+  if prev > curr: elapsed = prev - curr.
+  if prev < curr (wrap): elapsed = prev + (0xFFFFFFFF - curr) + 1.
+
+  Wrap period: ~51.5 seconds at 83.33MHz (was ~17s at 250MHz
+  in earlier drafts). At 1Hz measurement, at most one wrap
+  between samples.
+
+  PIO block allocation (GM — two PIO blocks):
+    PIO0 (GPS discipline, Core 0):
+      SM0 = counter_with_pin_trigger (83.33MHz, push on trigger)
+      SM1 = pps_edge_with_pin_signal (rising edge GPIO 2 → GPIO 22 pulse → SM0 snapshot)
+    PIO1 (HW timestamps, Core 1):
+      SM0 = counter_simple (83.33MHz free-running)
+      SM1 = int_timestamp (W5500 INTn falling edge → marker → read SM0)
+
+  PIO block allocation (Receiver — one PIO block):
+    PIO0:
+      SM0 = counter_simple (83.33MHz free-running)
+      SM1 = int_timestamp (W5500 INTn falling edge)
+
+  Cross-PIO-block bridging (GM only): PIO0 provides 1PPS
+  crystal calibration. PIO1 provides TX timestamps. These
+  are in independent counter domains. The bridge is
+  get_gps_time_ns() which converts everything to GPS
+  nanoseconds using System Timer interpolation. All PDU
+  timestamp fields use GPS nanoseconds, not raw PIO ticks.
+
+2.4. Cross-Domain Calibration
+
+  Decision: For v0.1, cross-domain calibration (PIO counter vs
+  System Timer) is captured but used only for the local
+  processing delay measurement, which is inherently lower
+  precision.
+
+  At each 1PPS interrupt, the ISR reads the System Timer
+  (timer_hw->timerawl) immediately after servicing the PIO
+  FIFO. The delta between the PIO capture and the System Timer
+  read is the interrupt service latency — typically 0.5-2us.
+  This is recorded but not corrected for in v0.1.
+
+  All high-precision calculations (1PPS intervals, deferred
+  timestamp delays) use only PIO-domain timestamps, avoiding
+  cross-domain conversion entirely.
+
+2.5. Floating Point and the Regression
+
+  Decision: Compute in the main loop, not in ISR context.
+
+  The 1PPS ISR captures the raw counter value and stores it.
+  The regression is recomputed in the main loop before
+  constructing each LTSP packet.
+
+  Use double for running sums. Use float for a1 and Sigma
+  (PDU fields). a0 is int64_t in the PDU (PIO ticks).
+
+  Recompute from scratch every REGRESSION_WINDOW cycles.
+
+2.6. GPS Interface
+
+  Decision: 1PPS only. No NMEA/UBX parsing in v0.1.
+
+  For testing without GPS hardware, a second RP2040 generating
+  a synthetic 1PPS via PIO or PWM is acceptable. This allows
+  controlled testing with known frequency offsets.
+
+2.7. W5500 MACRAW Configuration
+
+  Decision: MACRAW mode on Socket 0. The application constructs
+  complete Ethernet frames including destination MAC (broadcast
+  FF:FF:FF:FF:FF:FF), source MAC, and EtherType (0x88B5).
+
+  SPI0 at 40MHz (tested and working on existing hardware).
+
+  GPIO assignments (matching existing tested implementation):
+    SPI0_MISO = GPIO 16
+    SPI0_CS   = GPIO 17
+    SPI0_SCK  = GPIO 18
+    SPI0_MOSI = GPIO 19
+    W5500_RST = GPIO 20
+    W5500_INT = GPIO 21
+    GPS_1PPS  = GPIO 2   (GM only)
+    TRIGGER   = GPIO 22  (GM only, internal PIO0 SM1→SM0 signal)
+
+  W5500 initialisation:
+    - Set MR (Mode Register) to reset
+    - Configure MAC address in SHAR
+    - Open Socket 0 in MACRAW mode (Sn_MR = 0x04)
+    - Set Sn_IMR for SENDOK and RECV interrupts
+    - Enable socket interrupt in SIMR
+
+  Frame transmission:
+    1. Write frame to Socket 0 TX buffer
+    2. Set Sn_TX_WR pointer
+    3. Issue SEND command (Sn_CR = 0x20)
+    4. Wait for INTn (PIO captures timestamp)
+    5. Clear SENDOK interrupt
+
+  Frame reception:
+    1. INTn asserts (PIO captures timestamp)
+    2. Read Sn_RX_RSR for received size
+    3. Read frame from Socket 0 RX buffer
+    4. Update Sn_RX_RD pointer
+    5. Issue RECV command (Sn_CR = 0x40)
+    6. Clear RECV interrupt
+
+2.8. Clock Output (Receiver v0.1)
+
+  Decision: Report computed values over USB serial as CSV.
+
+  Format:
+    seq,t_rx_ns,t_tx_ns,d_total_ns,d_wire_est_ns,d_gm_local_ns,
+    d_rx_local_ns,offset_ns,sigma_ns,a0_ns,a1_ppb,1pps_interval_ticks
+
+  One line per processed deferred packet (not every received
+  packet — only when a valid Prev_Tx_Timestamp is available).
+  All delay/offset/timestamp values in nanoseconds, except
+  1pps_interval which is in PIO ticks (multiply by 12 for ns).
+  a1 is in parts-per-billion.
+
+  The receiver does NOT adjust its local clock in v0.1.
+
+2.9. Network Topology
+
+  Decision: Direct Ethernet crossover for v0.1.
+
+  This makes D_wire effectively constant, isolating the
+  deferred timestamp and PIO capture mechanisms for
+  validation. Switch testing in v0.2.
+
+2.10. Authentication
+
+  Omitted in v0.1. AUTH flag always 0. PDU is 56 bytes.
+
+2.11. Error Handling and Diagnostics
+
+  GM diagnostics (USB serial, 1Hz):
+    - 1PPS count, interval, crystal error (ppb)
+    - Regression: a0, a1, Sigma
+    - Packet seq, T_pio_tx
+    - Local processing delay (mean, last)
+
+  Receiver diagnostics: CSV per packet plus periodic summary.
+
+  Error lines prefixed with "ERR:". Continue operation on
+  all non-fatal errors.
+
+3. Testing Strategy
+-------------------
+
+3.1. Host-Side Unit Tests
+
+  Compile common/ modules with host gcc (no pico-sdk).
+
+  Test cases:
+    - PDU pack/unpack round-trip (byte order verification)
+    - Minimum filter: known delay sequence, verify output
+    - Minimum filter: path jump detection and reset
+    - Regression: synthetic 1PPS with known drift, verify
+      a0 and a1 convergence
+    - Regression: verify Sigma against known noise
+    - Sequence wraparound: gap detection at 65535->0
+    - PIO counter wrap: 32-bit to 64-bit extension
+
+3.2. Integration Test
+
+  Two boards, Ethernet crossover, 300+ seconds.
+
+  Pass criteria:
+    - Offset mean < 1us after acquisition
+    - Offset stddev within 2x Sigma
+    - No sequence gaps on crossover
+    - D_wire stable (no queuing on crossover)
+    - GM local processing delay consistent
+    - 1PPS interval consistent with expected crystal error
+
+3.3. Validation Against Reference
+
+  Oscilloscope or TIC comparing:
+    - GPS 1PPS input on GM
+    - PIO-generated pulse on Receiver at computed GPS time
+  (v0.2 when receiver produces corrected output)
