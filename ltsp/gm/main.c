@@ -77,6 +77,7 @@ static struct {
     uint32_t hw_ts_tx_success;
     uint32_t hw_ts_tx_fail;
     int64_t  last_tx_latency_ns;
+    int64_t  tx_latency_ema_ns;      // EMA of TX latency for gm_local_processing_mean
 } ltsp_state = {0};
 
 /**
@@ -110,7 +111,7 @@ static void send_ltsp_pdu(const uint8_t *my_mac) {
         .model_uncertainty  = regression_valid ? sigma_ns : 999999.0f,
         .last_1pps_count    = ltsp_pio_ticks_to_ns((int64_t)last_1pps_counter),
         .last_1pps_interval = last_1pps_interval,
-        .gm_local_processing_mean = (uint32_t)hw_timestamp_get_tx_latency_mean_ns(),
+        .gm_local_processing_mean = (uint32_t)ltsp_state.tx_latency_ema_ns,
     };
 
     if (!regression_valid) {
@@ -162,6 +163,12 @@ static void send_ltsp_pdu(const uint8_t *my_mac) {
             sw_tx_ns += tx_latency_ns;
             ltsp_state.hw_ts_tx_success++;
             ltsp_state.last_tx_latency_ns = tx_latency_ns;
+            // Update EMA (alpha = 1/16)
+            if (ltsp_state.tx_latency_ema_ns == 0) {
+                ltsp_state.tx_latency_ema_ns = tx_latency_ns;
+            } else {
+                ltsp_state.tx_latency_ema_ns += (tx_latency_ns - ltsp_state.tx_latency_ema_ns) >> 4;
+            }
         } else {
             hw_ts_valid = false;
             ltsp_state.hw_ts_tx_fail++;

@@ -4,9 +4,14 @@
  * Core 0: PIO counter management + HW timestamp FIFO drain
  * Core 1: W5500 Ethernet + LTSP PDU reception + CSV output
  *
- * v0.1: Report-only mode. No clock discipline. CSV output over USB serial.
+ * v0.2: Drift-compensated min filter. No clock discipline yet.
  *
- * Based on slave/main_w5500_slave.c with PTP replaced by LTSP reception.
+ * Key insight: HW timestamps on both GM and receiver already capture
+ * wire-departure and wire-arrival times, so d_total is wire-to-wire.
+ * No need to decompose into d_gm_local / d_rx_local for the offset
+ * calculation. A regression on d_total characterises the relative
+ * crystal drift, and de-trending before the min filter gives clean
+ * jitter measurements.
  */
 
 #include <stdio.h>
@@ -25,7 +30,7 @@
 #include "../common/ltsp_sequence.h"
 #include "../common/ltsp_min_filter.h"
 #include "../common/ltsp_pio_timestamp.h"
-#include "error_decomp.h"
+#include "../common/ltsp_regression.h"
 
 /* PIO programs (same as slave: counter + INTn timestamp) */
 #include "counter_simple.pio.h"
@@ -63,8 +68,7 @@ static ltsp_pio_ts_t rx_pio_ts;
 // Per-packet state for deferred timestamp processing
 typedef struct {
     uint16_t sequence;
-    int64_t  t_pio_rx_64;       // 64-bit extended PIO counter at INTn
-    uint64_t t_sys_spi_rx_us;   // System timer at SPI frame read
+    int64_t  t_rx_ns;           // Monotonically increasing receiver time (ns)
     bool     valid;
 } rx_record_t;
 
@@ -75,6 +79,14 @@ static rx_record_t prev_rx = {0};
 static ltsp_seq_state_t seq_state;
 static int64_t min_filter_buf[LTSP_MIN_FILTER_DEFAULT_WINDOW];
 static ltsp_min_filter_t min_filter;
+
+// Drift regression: fits d_total = a0 + a1 * sample_index
+// a1 gives relative crystal drift in ns/s
+static ltsp_regression_sample_t drift_reg_buf[LTSP_REGRESSION_DEFAULT_WINDOW];
+static ltsp_regression_t drift_reg;
+static int64_t d_total_ref_ns = 0;     // First d_total, for numerical stability
+static bool d_total_ref_set = false;
+static uint32_t drift_sample_count = 0;
 
 // Stats
 static uint32_t pdu_count = 0;
@@ -165,10 +177,9 @@ static uint32_t ip_str_to_u32(const char *ip_str) {
 
 /**
  * Process a received LTSP PDU.
- * Handles deferred timestamp model and CSV output.
+ * Handles deferred timestamp model, drift regression, and CSV output.
  */
-static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_rx,
-                              uint64_t sys_spi_rx_us) {
+static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_rx) {
     ltsp_pdu_t pdu;
     if (!ltsp_pdu_unpack(pdu_payload, &pdu)) {
         printf("ERR: PDU unpack failed\n");
@@ -189,51 +200,70 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
         // Continue processing — don't discard
     }
 
-    // Extend PIO counter to 64-bit
+    // Extend PIO counter to monotonically increasing 64-bit tick count
     ltsp_pio_ts_extend(&rx_pio_ts, hw_counter_at_rx);
-    int64_t t_pio_rx_64 = (int64_t)ltsp_pio_ts_to_u64(&rx_pio_ts);
+    int64_t t_rx_ns = (int64_t)ltsp_pio_ts_to_monotonic(&rx_pio_ts) * NS_PER_TICK;
 
     // --- Deferred timestamp processing ---
     // PDU N contains Prev_Tx_Timestamp = TX time of packet N-1 (GPS ns)
     // We need our stored RX record for packet N-1 to compute delay
     if (prev_rx.valid && pdu.prev_tx_timestamp != 0) {
-        // We have both pieces: T_gps_tx[N-1] and T_pio_rx[N-1]
-        ltsp_error_decomp_t decomp;
-        ltsp_error_decompose(
-            prev_rx.t_pio_rx_64,
-            pdu.prev_tx_timestamp,
-            pdu.gm_local_processing_mean,
-            prev_rx.t_sys_spi_rx_us,
-            ltsp_pio_ticks_to_ns(prev_rx.t_pio_rx_64),
-            &decomp
-        );
+        // d_total is wire-to-wire: HW timestamps already captured
+        // GM side (prev_tx_timestamp = sw_time + HW tx_latency)
+        // RX side (t_rx_ns = PIO counter at INTn edge)
+        int64_t d_total_ns = prev_rx.t_rx_ns - pdu.prev_tx_timestamp;
 
-        // Update minimum filter on D_wire
-        ltsp_min_filter_update(&min_filter, decomp.d_wire_ns);
+        // Reference d_total for numerical stability in regression
+        if (!d_total_ref_set) {
+            d_total_ref_ns = d_total_ns;
+            d_total_ref_set = true;
+        }
+        int64_t d_total_rel = d_total_ns - d_total_ref_ns;
 
-        // Compute offset: how far receiver is from GPS time
-        // offset = T_rx_ns - T_gps_tx_ns - D_wire_min
-        // Positive means receiver clock is ahead of GPS
-        int64_t d_wire_min = ltsp_min_filter_get_min(&min_filter);
-        int64_t offset_ns = decomp.d_total_ns - (int64_t)pdu.gm_local_processing_mean - d_wire_min - decomp.d_rx_local_ns;
+        // Feed into drift regression: fits d_total_rel = a0 + a1 * k
+        // a1 gives relative crystal drift in ns/sample (≈ ns/second)
+        ltsp_regression_add_sample(&drift_reg, (int64_t)drift_sample_count, d_total_rel);
+        if (drift_reg.count >= 2) {
+            ltsp_regression_compute(&drift_reg);
+        }
 
-        // CSV output (Section 2.8 of implementation guide)
-        // seq,t_rx_ns,t_tx_ns,d_total_ns,d_wire_est_ns,d_gm_local_ns,
-        // d_rx_local_ns,offset_ns,sigma_ns,a0_ns,a1_ppb,1pps_interval_ticks
-        printf("%u,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%.1f,%.1f,%.3f,%lu\n",
+        // De-trend d_total: remove the linear drift to isolate jitter
+        // Only valid once regression window is full (60 samples)
+        int64_t d_detrended = 0;
+        int64_t offset_ns = 0;
+        bool detrend_valid = drift_reg.result.valid &&
+                             drift_reg.count >= LTSP_REGRESSION_DEFAULT_WINDOW;
+        if (detrend_valid) {
+            double predicted = ltsp_regression_a0_at(&drift_reg, (int64_t)drift_sample_count);
+            d_detrended = d_total_rel - (int64_t)predicted;
+
+            // Min filter on de-trended values: minimum ≈ 0 (best-case jitter)
+            // offset = current - min ≈ excess jitter on this packet
+            ltsp_min_filter_update(&min_filter, d_detrended);
+            int64_t d_min = ltsp_min_filter_get_min(&min_filter);
+            offset_ns = d_detrended - d_min;
+        }
+
+        // Drift rate from regression (ns/s, approximately ppm * 1000)
+        double drift_ns_per_s = drift_reg.result.valid ? drift_reg.result.a1 : 0.0;
+        // Regression sigma (residual std dev) — already in ns since inputs are ns
+        double drift_sigma_ns = drift_reg.result.valid ? drift_reg.result.sigma : 999999.0;
+
+        // CSV output
+        // seq,d_total_ns,d_detrended_ns,offset_ns,drift_ns_per_s,drift_sigma_ns,
+        // gm_sigma_ns,gm_a1_ppb,1pps_interval_ticks
+        printf("%u,%lld,%lld,%lld,%.1f,%.1f,%.1f,%.3f,%lu\n",
                prev_rx.sequence,
-               (long long)decomp.t_rx_ns,
-               (long long)decomp.t_gps_tx_ns,
-               (long long)decomp.d_total_ns,
-               (long long)decomp.d_wire_ns,
-               (long long)decomp.d_gm_local_ns,
-               (long long)decomp.d_rx_local_ns,
+               (long long)d_total_ns,
+               (long long)d_detrended,
                (long long)offset_ns,
+               drift_ns_per_s,
+               drift_sigma_ns,
                (double)pdu.model_uncertainty,
-               (double)pdu.source_phase_bias,
                (double)pdu.source_freq_drift,
                (unsigned long)pdu.last_1pps_interval);
         csv_line_count++;
+        drift_sample_count++;
     } else {
         if (pdu.prev_tx_timestamp == 0) {
             deferred_skip_count++;
@@ -242,8 +272,7 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
 
     // Store this packet's RX record for deferred processing with NEXT packet
     prev_rx.sequence = pdu.sequence;
-    prev_rx.t_pio_rx_64 = t_pio_rx_64;
-    prev_rx.t_sys_spi_rx_us = sys_spi_rx_us;
+    prev_rx.t_rx_ns = t_rx_ns;
     prev_rx.valid = true;
 }
 
@@ -273,11 +302,15 @@ void core1_network_entry(void) {
     w5500_enable_interrupts();
     eth_init(&net_cfg);
 
+    // Initialize drift regression
+    ltsp_regression_init(&drift_reg, drift_reg_buf, LTSP_REGRESSION_DEFAULT_WINDOW);
+
     printf("[Core 1] LTSP Receiver ready: IP=%s\n", MY_IP_ADDR);
 
     // Print CSV header
-    printf("# seq,t_rx_ns,t_tx_ns,d_total_ns,d_wire_est_ns,d_gm_local_ns,"
-           "d_rx_local_ns,offset_ns,sigma_ns,a0_ns,a1_ppb,1pps_interval_ticks\n");
+    printf("# seq,d_total_ns,d_detrended_ns,offset_ns,"
+           "drift_ns_per_s,drift_sigma_ns,gm_sigma_ns,gm_a1_ppb,"
+           "1pps_interval_ticks\n");
 
     uint64_t last_stats_time_us = 0;
     uint8_t rx_buffer[W5500_MAX_FRAME_SIZE];
@@ -306,7 +339,6 @@ void core1_network_entry(void) {
         if (w5500_recv_frame(rx_buffer, sizeof(rx_buffer), &rx_len)) {
             // Capture SW counter immediately after read
             uint32_t sw_counter = read_counter();
-            uint64_t sys_spi_rx_us = time_us_64();
 
             // Try HW timestamp first
             uint32_t hw_counter;
@@ -320,7 +352,7 @@ void core1_network_entry(void) {
             // Check if LTSP frame (EtherType 0x88B5)
             const uint8_t *pdu_payload = ltsp_frame_check(rx_buffer, rx_len);
             if (pdu_payload) {
-                process_ltsp_pdu(pdu_payload, rx_counter, sys_spi_rx_us);
+                process_ltsp_pdu(pdu_payload, rx_counter);
             } else {
                 // Handle ARP/ICMP
                 udp_packet_t udp;
@@ -332,10 +364,14 @@ void core1_network_entry(void) {
 
         // Stats every 60 seconds (prefixed with # so CSV parsers ignore)
         if (now_us - last_stats_time_us >= 60000000) {
-            int64_t d_wire_min = ltsp_min_filter_get_min(&min_filter);
-            printf("# STATS: PDUs=%lu CSV=%lu Gaps=%lu Dups=%lu Skip=%lu D_wire_min=%lld ns\n",
+            int64_t d_min = ltsp_min_filter_get_min(&min_filter);
+            double drift = drift_reg.result.valid ? drift_reg.result.a1 : 0.0;
+            double sigma = drift_reg.result.valid ? drift_reg.result.sigma : 999999.0;
+            printf("# STATS: PDUs=%lu CSV=%lu Gaps=%lu Dups=%lu Skip=%lu "
+                   "d_min=%lld ns drift=%.1f ns/s sigma=%.1f ns\n",
                    pdu_count, csv_line_count, seq_gap_count, seq_dup_count,
-                   deferred_skip_count, (long long)d_wire_min);
+                   deferred_skip_count, (long long)d_min,
+                   drift, sigma);
             last_stats_time_us = now_us;
         }
 
@@ -352,7 +388,7 @@ int main() {
     stdio_init_all();
     sleep_ms(2000);
 
-    printf("\n=== LTSP Receiver v0.1 - Dual Core ===\n");
+    printf("\n=== LTSP Receiver v0.2 - Dual Core ===\n");
     printf("System clock: %lu MHz\n", clock_get_hz(clk_sys) / 1000000);
 
     // Initialize PIO counter (free-running 83.33 MHz)

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-LTSP Test Harness — Dual USB Serial Monitor
+LTSP Test Harness v0.2 — Dual USB Serial Monitor
 
 Reads GM and Receiver USB serial simultaneously, correlates by sequence
 number, and provides live validation of the LTSP protocol chain.
+
+Receiver v0.2 CSV format (9 columns):
+    seq, d_total_ns, d_detrended_ns, offset_ns, drift_ns_per_s,
+    drift_sigma_ns, gm_sigma_ns, gm_a1_ppb, 1pps_interval_ticks
 
 Usage:
     python3 ltsp_test_harness.py /dev/tty.usbmodemXXXX /dev/tty.usbmodemYYYY
@@ -41,16 +45,13 @@ class GMSample:
 @dataclass
 class RXSample:
     seq: int
-    t_rx_ns: int
-    t_tx_ns: int
     d_total_ns: int
-    d_wire_ns: int
-    d_gm_local_ns: int
-    d_rx_local_ns: int
+    d_detrended_ns: int
     offset_ns: int
-    sigma_ns: float
-    a0_ns: float
-    a1_ppb: float
+    drift_ns_per_s: float
+    drift_sigma_ns: float
+    gm_sigma_ns: float
+    gm_a1_ppb: float
     interval_ticks: int
     timestamp: float         # host wall clock
 
@@ -84,7 +85,7 @@ GM_REG_RE = re.compile(
 )
 
 def parse_gm_line(line: str, now: float):
-    """Parse a GM serial line. Returns GMSample, or updates stats, or None."""
+    """Parse a GM serial line. Returns GMSample or None."""
     m = GM_PDU_RE.search(line)
     if m:
         return GMSample(
@@ -112,27 +113,24 @@ def parse_gm_stats(line: str, stats: GMStats):
         stats.sigma_ns = float(m.group(3))
 
 def parse_rx_csv(line: str, now: float):
-    """Parse a receiver CSV line. Returns RXSample or None."""
+    """Parse a receiver v0.2 CSV line. Returns RXSample or None."""
     line = line.strip()
     if not line or line.startswith('#'):
         return None
     parts = line.split(',')
-    if len(parts) < 12:
+    if len(parts) < 9:
         return None
     try:
         return RXSample(
             seq=int(parts[0]),
-            t_rx_ns=int(parts[1]),
-            t_tx_ns=int(parts[2]),
-            d_total_ns=int(parts[3]),
-            d_wire_ns=int(parts[4]),
-            d_gm_local_ns=int(parts[5]),
-            d_rx_local_ns=int(parts[6]),
-            offset_ns=int(parts[7]),
-            sigma_ns=float(parts[8]),
-            a0_ns=float(parts[9]),
-            a1_ppb=float(parts[10]),
-            interval_ticks=int(parts[11]),
+            d_total_ns=int(parts[1]),
+            d_detrended_ns=int(parts[2]),
+            offset_ns=int(parts[3]),
+            drift_ns_per_s=float(parts[4]),
+            drift_sigma_ns=float(parts[5]),
+            gm_sigma_ns=float(parts[6]),
+            gm_a1_ppb=float(parts[7]),
+            interval_ticks=int(parts[8]),
             timestamp=now,
         )
     except (ValueError, IndexError):
@@ -173,40 +171,6 @@ class RunningStats:
                 f"n={self.n}")
 
 # ---------------------------------------------------------------------------
-# Linear fit (for drift estimation)
-# ---------------------------------------------------------------------------
-
-class LinearFit:
-    """Online linear regression: y = slope * x + intercept"""
-    def __init__(self):
-        self.n = 0
-        self.sx = 0.0
-        self.sy = 0.0
-        self.sxx = 0.0
-        self.sxy = 0.0
-
-    def update(self, x, y):
-        self.n += 1
-        self.sx += x
-        self.sy += y
-        self.sxx += x * x
-        self.sxy += x * y
-
-    @property
-    def slope(self):
-        if self.n < 2:
-            return 0.0
-        denom = self.n * self.sxx - self.sx * self.sx
-        if abs(denom) < 1e-30:
-            return 0.0
-        return (self.n * self.sxy - self.sx * self.sy) / denom
-
-    @property
-    def slope_ppb(self):
-        """Slope as parts-per-billion (ns/ns = dimensionless, * 1e9 for ppb)"""
-        return self.slope * 1e9
-
-# ---------------------------------------------------------------------------
 # Test harness state
 # ---------------------------------------------------------------------------
 
@@ -221,22 +185,16 @@ class TestHarness:
         # GM stats (latest)
         self.gm_stats = GMStats()
 
-        # Correlation
-        self.gm_seqs_seen = set()
-        self.rx_seqs_seen = set()
-        self.matched_count = 0
-
         # Statistics
-        self.d_wire_stats = RunningStats()
         self.d_total_stats = RunningStats()
-        self.d_gm_local_stats = RunningStats()
-        self.d_rx_local_stats = RunningStats()
+        self.d_detrended_stats = RunningStats()
         self.offset_stats = RunningStats()
         self.tx_latency_stats = RunningStats()
 
-        # Drift estimation: offset_ns vs host_time
-        self.drift_fit = LinearFit()
-        self.first_rx_time = None
+        # Latest receiver-reported values
+        self.last_drift_ns_per_s = 0.0
+        self.last_drift_sigma_ns = 0.0
+        self.converged = False  # True once receiver reports non-zero d_detrended
 
         # Packet loss
         self.rx_seq_gaps = 0
@@ -252,13 +210,11 @@ class TestHarness:
     def add_gm_sample(self, s: GMSample):
         with self.lock:
             self.gm_samples.append(s)
-            self.gm_seqs_seen.add(s.seq)
             self.tx_latency_stats.update(s.tx_latency_ns)
 
     def add_rx_sample(self, s: RXSample):
         with self.lock:
             self.rx_samples.append(s)
-            self.rx_seqs_seen.add(s.seq)
 
             # Sequence gap detection
             if self.last_rx_seq is not None:
@@ -267,24 +223,24 @@ class TestHarness:
                     self.rx_seq_gaps += 1
             self.last_rx_seq = s.seq
 
-            # Update statistics
-            self.d_wire_stats.update(s.d_wire_ns)
+            # Track convergence: non-zero d_detrended means regression is full
+            if s.d_detrended_ns != 0 or s.offset_ns != 0:
+                self.converged = True
+
+            # Update statistics (only after convergence)
+            if self.converged:
+                self.d_detrended_stats.update(s.d_detrended_ns)
+                self.offset_stats.update(s.offset_ns)
+
             self.d_total_stats.update(s.d_total_ns)
-            self.d_gm_local_stats.update(s.d_gm_local_ns)
-            self.d_rx_local_stats.update(s.d_rx_local_ns)
-            self.offset_stats.update(s.offset_ns)
+            self.last_drift_ns_per_s = s.drift_ns_per_s
+            self.last_drift_sigma_ns = s.drift_sigma_ns
 
-            # Drift fit: elapsed seconds vs offset_ns
-            if self.first_rx_time is None:
-                self.first_rx_time = s.timestamp
-            elapsed = s.timestamp - self.first_rx_time
-            self.drift_fit.update(elapsed, s.offset_ns)
-
-            # Emit correlated CSV to stdout
+            # Emit CSV to stdout
             print(f"{s.seq},{s.timestamp - self.start_time:.3f},"
-                  f"{s.t_rx_ns},{s.t_tx_ns},{s.d_total_ns},"
-                  f"{s.d_wire_ns},{s.d_gm_local_ns},{s.d_rx_local_ns},"
-                  f"{s.offset_ns},{s.sigma_ns},{s.a1_ppb}",
+                  f"{s.d_total_ns},{s.d_detrended_ns},{s.offset_ns},"
+                  f"{s.drift_ns_per_s:.1f},{s.drift_sigma_ns:.1f},"
+                  f"{s.gm_sigma_ns:.1f},{s.gm_a1_ppb:.3f}",
                   flush=True)
 
     def dashboard(self):
@@ -293,7 +249,7 @@ class TestHarness:
             elapsed = time.time() - self.start_time
             lines = []
             lines.append(f"{'='*72}")
-            lines.append(f" LTSP Test Harness  |  {elapsed:.0f}s elapsed")
+            lines.append(f" LTSP Test Harness v0.2  |  {elapsed:.0f}s elapsed")
             lines.append(f"{'='*72}")
 
             # GM status
@@ -310,36 +266,37 @@ class TestHarness:
             lines.append(f"{'-'*72}")
 
             # Receiver status
-            lines.append(f" RX  | Packets: {self.offset_stats.n}  "
+            total_rx = self.d_total_stats.n
+            lines.append(f" RX  | Packets: {total_rx}  "
                          f"Seq gaps: {self.rx_seq_gaps}  "
-                         f"Errors: GM={self.gm_errors} RX={self.rx_errors}")
+                         f"Errors: GM={self.gm_errors} RX={self.rx_errors}  "
+                         f"Converged: {'YES' if self.converged else 'NO'}")
 
-            # Delay decomposition
-            lines.append(f"      | D_total:    {self.d_total_stats.summary(' ns')}")
-            lines.append(f"      | D_wire:     {self.d_wire_stats.summary(' ns')}")
-            lines.append(f"      | D_gm_local: {self.d_gm_local_stats.summary(' ns')}")
-            lines.append(f"      | D_rx_local: {self.d_rx_local_stats.summary(' ns')}")
+            # Drift characterisation (from receiver's regression)
+            drift_ppm = self.last_drift_ns_per_s / 1000.0
+            lines.append(f"      | Drift: {self.last_drift_ns_per_s:+.1f} ns/s "
+                         f"= {drift_ppm:+.1f} ppm  "
+                         f"sigma={self.last_drift_sigma_ns:.0f} ns")
 
             lines.append(f"{'-'*72}")
 
-            # Clock offset + drift
-            lines.append(f" CLK | Offset:     {self.offset_stats.summary(' ns')}")
-            if self.drift_fit.n >= 10:
-                drift = self.drift_fit.slope
-                lines.append(f"      | Drift rate: {drift:+.1f} ns/s "
-                             f"= {drift/1000:+.3f} us/s "
-                             f"= {drift/1000:+.3f} ppm")
+            # De-trended jitter (only meaningful after convergence)
+            if self.converged:
+                lines.append(f" CLK | Detrended: {self.d_detrended_stats.summary(' ns')}")
+                lines.append(f"      | Offset:    {self.offset_stats.summary(' ns')}")
             else:
-                lines.append(f"      | Drift rate: (need >= 10 samples)")
+                lines.append(f" CLK | Waiting for drift regression to converge "
+                             f"(~60 samples)...")
 
             # Verdicts
             lines.append(f"{'='*72}")
             verdicts = []
-            if self.offset_stats.n >= 10:
-                if self.d_wire_stats.std < 10000:  # < 10 us
-                    verdicts.append("PASS: D_wire jitter < 10 us")
+            if self.converged and self.d_detrended_stats.n >= 10:
+                jitter_us = self.d_detrended_stats.std / 1000.0
+                if jitter_us < 100:
+                    verdicts.append(f"PASS: Jitter sigma = {jitter_us:.1f} us")
                 else:
-                    verdicts.append(f"WARN: D_wire jitter = {self.d_wire_stats.std:.0f} ns")
+                    verdicts.append(f"WARN: Jitter sigma = {jitter_us:.1f} us (high)")
 
                 if self.rx_seq_gaps == 0:
                     verdicts.append("PASS: Zero packet loss")
@@ -349,12 +306,17 @@ class TestHarness:
                 if gs.regression_valid and gs.sigma_ns < 50:
                     verdicts.append(f"PASS: GM regression sigma = {gs.sigma_ns:.1f} ns")
 
-                if self.drift_fit.n >= 30:
-                    drift_ppm = abs(self.drift_fit.slope / 1000)
-                    if drift_ppm < 100:  # < 100 ppm is normal for crystal
-                        verdicts.append(f"PASS: Drift = {drift_ppm:.1f} ppm (normal crystal)")
-                    else:
-                        verdicts.append(f"WARN: Drift = {drift_ppm:.1f} ppm (high)")
+                drift_ppm = abs(self.last_drift_ns_per_s / 1000.0)
+                if drift_ppm < 100:
+                    verdicts.append(f"PASS: RX crystal = {drift_ppm:.1f} ppm")
+                else:
+                    verdicts.append(f"WARN: RX crystal = {drift_ppm:.1f} ppm (high)")
+
+                sigma_ns = self.last_drift_sigma_ns
+                if sigma_ns < 50000:
+                    verdicts.append(f"PASS: Drift sigma = {sigma_ns:.0f} ns")
+                else:
+                    verdicts.append(f"WARN: Drift sigma = {sigma_ns:.0f} ns (high)")
             else:
                 verdicts.append("... collecting samples ...")
 
@@ -466,8 +428,8 @@ def main():
     harness = TestHarness()
 
     # CSV header to stdout
-    print("# seq,elapsed_s,t_rx_ns,t_tx_ns,d_total_ns,d_wire_ns,"
-          "d_gm_local_ns,d_rx_local_ns,offset_ns,sigma_ns,a1_ppb",
+    print("# seq,elapsed_s,d_total_ns,d_detrended_ns,offset_ns,"
+          "drift_ns_per_s,drift_sigma_ns,gm_sigma_ns,gm_a1_ppb",
           flush=True)
 
     # Start reader threads

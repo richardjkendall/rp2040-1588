@@ -1,5 +1,5 @@
 # ============================================================================
-# LTSP Receiver - Report-Only v0.1
+# LTSP Receiver v0.2 - Drift-compensated min filter
 # Core 0: PIO counter + HW timestamp FIFO drain
 # Core 1: W5500 Ethernet + LTSP PDU reception + CSV output
 #
@@ -7,7 +7,6 @@
 # ============================================================================
 add_executable(ltsp_receiver
     main.c
-    error_decomp.c
     w5500_simple.c
     eth_simple.c
 )

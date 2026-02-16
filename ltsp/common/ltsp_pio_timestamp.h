@@ -41,6 +41,17 @@ uint64_t ltsp_pio_ts_to_u64(const ltsp_pio_ts_t *ts);
  */
 int64_t ltsp_pio_ts_diff(const ltsp_pio_ts_t *a, const ltsp_pio_ts_t *b);
 
+/*
+ * Convert to a monotonically INCREASING tick count.
+ * The raw (upper, lower) representation has discontinuities at wrap
+ * because upper increments while lower jumps to 0xFFFFFFFF.
+ * This function returns: upper * 2^32 + (0xFFFFFFFF - lower),
+ * which increases by 1 for every PIO tick regardless of wraps.
+ */
+static inline uint64_t ltsp_pio_ts_to_monotonic(const ltsp_pio_ts_t *ts) {
+    return ((uint64_t)ts->upper << 32) + (0xFFFFFFFFU - ts->lower);
+}
+
 /* Convert a tick difference to nanoseconds */
 static inline int64_t ltsp_pio_ticks_to_ns(int64_t ticks) {
     return ticks * LTSP_PIO_TICK_NS;

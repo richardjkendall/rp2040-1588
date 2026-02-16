@@ -27,15 +27,13 @@ typedef struct {
  * @param t_pio_rx_ticks  Receiver PIO counter at INTn edge (64-bit extended), in PIO ticks
  * @param t_gps_tx_ns     GM's Prev_Tx_Timestamp (GPS nanoseconds)
  * @param d_gm_local_ns   GM's local processing mean (from PDU field, nanoseconds)
- * @param t_sys_spi_rx_us Receiver's system timer at SPI read (microseconds, for D_rx_local estimate)
- * @param t_pio_rx_ns_approx Approximate nanosecond value of PIO RX (for D_rx_local: T_sys_spi - T_pio_rx)
+ * @param d_rx_local_ns   Receiver local processing delay (INTn to SPI read), in nanoseconds
  * @param result          Output decomposition
  */
 void ltsp_error_decompose(int64_t t_pio_rx_ticks,
                            int64_t t_gps_tx_ns,
                            uint32_t d_gm_local_ns,
-                           uint64_t t_sys_spi_rx_us,
-                           int64_t t_pio_rx_ns_approx,
+                           int64_t d_rx_local_ns,
                            ltsp_error_decomp_t *result);
 
 #endif /* LTSP_ERROR_DECOMP_H */
