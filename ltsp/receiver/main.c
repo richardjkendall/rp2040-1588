@@ -1,21 +1,22 @@
 /**
- * LTSP Receiver - Dual Core
+ * LTSP Receiver v0.3 - Dual Core
  *
- * Core 0: PIO counter management + HW timestamp FIFO drain
- * Core 1: W5500 Ethernet + LTSP PDU reception + CSV output
+ * Core 0: PIO counter management + HW timestamp FIFO drain + 1PPS scheduling
+ * Core 1: W5500 Ethernet + LTSP PDU reception + clock discipline + CSV output
  *
- * v0.2: Drift-compensated min filter. No clock discipline yet.
+ * v0.3: Clock reconstruction with PI servo and 1PPS output.
  *
- * Key insight: HW timestamps on both GM and receiver already capture
- * wire-departure and wire-arrival times, so d_total is wire-to-wire.
- * No need to decompose into d_gm_local / d_rx_local for the offset
- * calculation. A regression on d_total characterises the relative
- * crystal drift, and de-trending before the min filter gives clean
- * jitter measurements.
+ * Pipeline 1 (measurement): Raw PIO timestamps → d_total → drift regression
+ *   → de-trending → min filter → offset_ns (jitter metric)
+ *
+ * Pipeline 2 (clock): Disciplined clock maintained via PI servo, initialised
+ *   at convergence from Pipeline 1's outputs. Computes clock error
+ *   (disciplined clock vs GM estimate), steers frequency, drives 1PPS.
  */
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
@@ -32,9 +33,14 @@
 #include "../common/ltsp_pio_timestamp.h"
 #include "../common/ltsp_regression.h"
 
-/* PIO programs (same as slave: counter + INTn timestamp) */
+/* Clock discipline */
+#include "ltsp_clock.h"
+#include "pps_scheduler.h"
+
+/* PIO programs (counter + INTn timestamp + 1PPS) */
 #include "counter_simple.pio.h"
 #include "int_timestamp.pio.h"
+#include "scheduled_1pps.pio.h"
 
 // Network configuration
 #define MY_MAC          {0x00, 0x08, 0xDC, 0x12, 0x34, 0x02}
@@ -42,10 +48,12 @@
 #define MY_NETMASK      "255.255.255.0"
 #define MY_GATEWAY      "192.168.1.1"
 
-// PIO configuration (PIO0 for both counter and INTn capture)
+// PIO configuration (PIO0: SM0=counter, SM1=INTn, SM2=1PPS)
 #define RX_PIO          pio0
 #define COUNTER_SM      0
 #define INT_TIMESTAMP_SM 1
+#define PPS_SM          2
+#define PPS_OUTPUT_PIN  15
 
 // W5500 INT pin
 #define W5500_PIN_INT   21
@@ -69,6 +77,7 @@ static ltsp_pio_ts_t rx_pio_ts;
 typedef struct {
     uint16_t sequence;
     int64_t  t_rx_ns;           // Monotonically increasing receiver time (ns)
+    int64_t  clock_at_rx;       // Disciplined clock value at RX moment
     bool     valid;
 } rx_record_t;
 
@@ -87,6 +96,11 @@ static ltsp_regression_t drift_reg;
 static int64_t d_total_ref_ns = 0;     // First d_total, for numerical stability
 static bool d_total_ref_set = false;
 static uint32_t drift_sample_count = 0;
+
+// Clock discipline
+static ltsp_clock_state_t clock_state;
+static bool clock_initialized = false;  // One-shot: set initial clock at convergence
+static int64_t gps_phase_correction_ns = 0;  // PIO-to-GPS second boundary offset
 
 // Stats
 static uint32_t pdu_count = 0;
@@ -177,7 +191,7 @@ static uint32_t ip_str_to_u32(const char *ip_str) {
 
 /**
  * Process a received LTSP PDU.
- * Handles deferred timestamp model, drift regression, and CSV output.
+ * Handles deferred timestamp model, drift regression, clock discipline, and CSV output.
  */
 static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_rx) {
     ltsp_pdu_t pdu;
@@ -204,13 +218,18 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
     ltsp_pio_ts_extend(&rx_pio_ts, hw_counter_at_rx);
     int64_t t_rx_ns = (int64_t)ltsp_pio_ts_to_monotonic(&rx_pio_ts) * NS_PER_TICK;
 
+    // Capture disciplined clock at this RX moment (for use by NEXT packet)
+    int64_t clock_at_this_rx = clock_state.clock_valid ? (int64_t)get_ltsp_time_ns() : 0;
+
+    // Update state machine: we received a packet
+    bool gm_holdover = (pdu.flags & LTSP_FLAG_HOLDOVER) != 0;
+    ltsp_clock_update_state(&clock_state, true, gm_holdover, clock_state.last_clock_error_ns);
+
     // --- Deferred timestamp processing ---
     // PDU N contains Prev_Tx_Timestamp = TX time of packet N-1 (GPS ns)
     // We need our stored RX record for packet N-1 to compute delay
     if (prev_rx.valid && pdu.prev_tx_timestamp != 0) {
         // d_total is wire-to-wire: HW timestamps already captured
-        // GM side (prev_tx_timestamp = sw_time + HW tx_latency)
-        // RX side (t_rx_ns = PIO counter at INTn edge)
         int64_t d_total_ns = prev_rx.t_rx_ns - pdu.prev_tx_timestamp;
 
         // Reference d_total for numerical stability in regression
@@ -221,7 +240,6 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
         int64_t d_total_rel = d_total_ns - d_total_ref_ns;
 
         // Feed into drift regression: fits d_total_rel = a0 + a1 * k
-        // a1 gives relative crystal drift in ns/sample (≈ ns/second)
         ltsp_regression_add_sample(&drift_reg, (int64_t)drift_sample_count, d_total_rel);
         if (drift_reg.count >= 2) {
             ltsp_regression_compute(&drift_reg);
@@ -231,28 +249,82 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
         // Only valid once regression window is full (60 samples)
         int64_t d_detrended = 0;
         int64_t offset_ns = 0;
+        int64_t clock_error_ns = 0;
         bool detrend_valid = drift_reg.result.valid &&
                              drift_reg.count >= LTSP_REGRESSION_DEFAULT_WINDOW;
         if (detrend_valid) {
             double predicted = ltsp_regression_a0_at(&drift_reg, (int64_t)drift_sample_count);
             d_detrended = d_total_rel - (int64_t)predicted;
 
-            // Min filter on de-trended values: minimum ≈ 0 (best-case jitter)
-            // offset = current - min ≈ excess jitter on this packet
+            // Min filter on de-trended values
             ltsp_min_filter_update(&min_filter, d_detrended);
             int64_t d_min = ltsp_min_filter_get_min(&min_filter);
             offset_ns = d_detrended - d_min;
+
+            // --- Clock discipline (Pipeline 2) ---
+            double drift_ns_per_s_now = drift_reg.result.a1;
+
+            // Absolute minimum one-way delay estimate:
+            // d_total = d_total_ref + d_total_rel
+            // d_total_rel = predicted + d_detrended
+            // d_detrended = d_min + offset_ns
+            // So: min_delay_abs = d_total_ref + predicted + d_min
+            int64_t min_delay_abs = d_total_ref_ns + (int64_t)predicted + d_min;
+
+            if (!clock_initialized) {
+                // First convergence: initialize disciplined clock
+                // Deferred model gives us GPS time at prev packet's RX.
+                // Extrapolate to current packet's RX time so the clock
+                // starts at the right phase (avoids 1-second offset).
+                int64_t gps_time_at_prev_rx = pdu.prev_tx_timestamp + min_delay_abs;
+                int64_t elapsed_pio_ns = t_rx_ns - prev_rx.t_rx_ns;
+                int64_t gps_time_at_this_rx = gps_time_at_prev_rx + elapsed_pio_ns;
+
+                // Phase correction: align 1PPS with GPS second boundaries.
+                // The clock runs in PIO domain (for signed servo errors), but
+                // we shift it so its second boundaries match GPS time.
+                // phase = min_delay_abs % 1e9 = (PIO_frac - GPS_frac)
+                gps_phase_correction_ns = min_delay_abs % 1000000000LL;
+                if (gps_phase_correction_ns < 0)
+                    gps_phase_correction_ns += 1000000000LL;
+
+                ltsp_clock_set_initial(&clock_state,
+                    gps_time_at_this_rx - gps_phase_correction_ns,
+                    drift_ns_per_s_now);
+                clock_initialized = true;
+                // Recapture clock_at_this_rx (was 0 because clock wasn't valid)
+                clock_at_this_rx = (int64_t)get_ltsp_time_ns();
+
+                printf("# CLOCK: Phase correction %lld ns\n",
+                       (long long)gps_phase_correction_ns);
+            } else if (prev_rx.clock_at_rx == 0) {
+                // Skip discipline if prev clock reading is invalid
+                // (shouldn't happen after the recapture above, but safety net)
+                ltsp_clock_advance(&clock_state);
+            } else {
+                // Compute clock error using saved disciplined clock from prev RX
+                // Subtract same phase correction so it cancels in the error
+                int64_t gm_estimate = pdu.prev_tx_timestamp + min_delay_abs
+                                      - gps_phase_correction_ns;
+                clock_error_ns = prev_rx.clock_at_rx - gm_estimate;
+
+                // Advance clock to current time, then apply phase correction
+                ltsp_clock_advance(&clock_state);
+                ltsp_clock_discipline(&clock_state, clock_error_ns, 1.0);
+
+                // Update frequency directly from regression (not PI integral)
+                ltsp_clock_update_frequency(&clock_state, drift_ns_per_s_now);
+            }
         }
 
-        // Drift rate from regression (ns/s, approximately ppm * 1000)
+        // Drift rate from regression
         double drift_ns_per_s = drift_reg.result.valid ? drift_reg.result.a1 : 0.0;
-        // Regression sigma (residual std dev) — already in ns since inputs are ns
         double drift_sigma_ns = drift_reg.result.valid ? drift_reg.result.sigma : 999999.0;
 
-        // CSV output
+        // CSV output (v0.3: 11 columns)
         // seq,d_total_ns,d_detrended_ns,offset_ns,drift_ns_per_s,drift_sigma_ns,
-        // gm_sigma_ns,gm_a1_ppb,1pps_interval_ticks
-        printf("%u,%lld,%lld,%lld,%.1f,%.1f,%.1f,%.3f,%lu\n",
+        // gm_sigma_ns,gm_a1_ppb,1pps_interval_ticks,clock_error_ns,sync_state
+        printf("%u,%lld,%lld,%lld,%.1f,%.1f,%.1f,%.3f,%lu,%lld,%s\n",
                prev_rx.sequence,
                (long long)d_total_ns,
                (long long)d_detrended,
@@ -261,7 +333,9 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
                drift_sigma_ns,
                (double)pdu.model_uncertainty,
                (double)pdu.source_freq_drift,
-               (unsigned long)pdu.last_1pps_interval);
+               (unsigned long)pdu.last_1pps_interval,
+               (long long)clock_error_ns,
+               ltsp_sync_state_name(clock_state.state));
         csv_line_count++;
         drift_sample_count++;
     } else {
@@ -273,6 +347,7 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
     // Store this packet's RX record for deferred processing with NEXT packet
     prev_rx.sequence = pdu.sequence;
     prev_rx.t_rx_ns = t_rx_ns;
+    prev_rx.clock_at_rx = clock_at_this_rx;
     prev_rx.valid = true;
 }
 
@@ -310,7 +385,7 @@ void core1_network_entry(void) {
     // Print CSV header
     printf("# seq,d_total_ns,d_detrended_ns,offset_ns,"
            "drift_ns_per_s,drift_sigma_ns,gm_sigma_ns,gm_a1_ppb,"
-           "1pps_interval_ticks\n");
+           "1pps_interval_ticks,clock_error_ns,sync_state\n");
 
     uint64_t last_stats_time_us = 0;
     uint8_t rx_buffer[W5500_MAX_FRAME_SIZE];
@@ -368,10 +443,13 @@ void core1_network_entry(void) {
             double drift = drift_reg.result.valid ? drift_reg.result.a1 : 0.0;
             double sigma = drift_reg.result.valid ? drift_reg.result.sigma : 999999.0;
             printf("# STATS: PDUs=%lu CSV=%lu Gaps=%lu Dups=%lu Skip=%lu "
-                   "d_min=%lld ns drift=%.1f ns/s sigma=%.1f ns\n",
+                   "d_min=%lld ns drift=%.1f ns/s sigma=%.1f ns "
+                   "state=%s clk_err=%+lld ns\n",
                    pdu_count, csv_line_count, seq_gap_count, seq_dup_count,
                    deferred_skip_count, (long long)d_min,
-                   drift, sigma);
+                   drift, sigma,
+                   ltsp_sync_state_name(clock_state.state),
+                   (long long)clock_state.last_clock_error_ns);
             last_stats_time_us = now_us;
         }
 
@@ -380,7 +458,7 @@ void core1_network_entry(void) {
 }
 
 /**
- * Core 0: PIO initialization + FIFO drain loop
+ * Core 0: PIO initialization + FIFO drain + 1PPS scheduling
  */
 int main() {
     set_sys_clock_khz(250000, true);
@@ -388,7 +466,7 @@ int main() {
     stdio_init_all();
     sleep_ms(2000);
 
-    printf("\n=== LTSP Receiver v0.2 - Dual Core ===\n");
+    printf("\n=== LTSP Receiver v0.3 - Dual Core ===\n");
     printf("System clock: %lu MHz\n", clock_get_hz(clk_sys) / 1000000);
 
     // Initialize PIO counter (free-running 83.33 MHz)
@@ -405,7 +483,21 @@ int main() {
     ltsp_pio_ts_init(&rx_pio_ts);
     ltsp_seq_init(&seq_state);
     ltsp_min_filter_init(&min_filter, min_filter_buf, LTSP_MIN_FILTER_DEFAULT_WINDOW);
+    ltsp_clock_init(&clock_state);
     printf("[Core 0] LTSP modules initialized\n");
+
+    // Initialize 1PPS scheduler
+    pps_scheduler_t pps_sched = {
+        .pio = RX_PIO,
+        .sm = PPS_SM,
+        .pin = PPS_OUTPUT_PIN,
+        .get_time_ns = get_ltsp_time_ns,
+        .get_scale_factor = ltsp_clock_get_scale_factor,
+    };
+    if (!pps_scheduler_init(&pps_sched)) {
+        printf("[Core 0] WARNING: 1PPS scheduler init failed\n");
+    }
+    printf("[Core 0] 1PPS output on GPIO%d\n", PPS_OUTPUT_PIN);
 
     // Signal Core 1
     core0_ready = true;
@@ -413,11 +505,45 @@ int main() {
     // Launch Core 1
     multicore_launch_core1(core1_network_entry);
 
-    printf("[Core 0] Entering FIFO drain loop...\n\n");
+    printf("[Core 0] Entering FIFO drain + 1PPS loop...\n\n");
 
-    // Core 0 minimal loop: just drain HW timestamp FIFO
+    bool pps_enabled = false;
+    uint64_t last_pps_schedule_us = 0;
+
+    // Core 0 loop: drain HW timestamp FIFO + schedule 1PPS
     while (true) {
         drain_hw_timestamp_fifo();
+
+        // Enable 1PPS when clock is LOCKED (or ACQUIRING with valid clock)
+        if (!pps_enabled && clock_state.clock_valid &&
+            (clock_state.state == LTSP_SYNC_LOCKED ||
+             clock_state.state == LTSP_SYNC_ACQUIRING)) {
+            pps_enabled = true;
+            printf("# 1PPS: Enabled (state=%s)\n",
+                   ltsp_sync_state_name(clock_state.state));
+        }
+
+        // Disable 1PPS if clock becomes invalid
+        if (pps_enabled && !clock_state.clock_valid) {
+            pps_enabled = false;
+            printf("# 1PPS: Disabled (clock invalid)\n");
+        }
+
+        // Schedule 1PPS near second boundary
+        if (pps_enabled) {
+            uint64_t ltsp_time = get_ltsp_time_ns();
+            if (ltsp_time > 0) {
+                uint64_t ns_in_second = ltsp_time % 1000000000ULL;
+                uint64_t now_us = time_us_64();
+
+                if (ns_in_second > 900000000ULL &&
+                    (now_us - last_pps_schedule_us >= 800000)) {
+                    pps_scheduler_schedule_next(&pps_sched);
+                    last_pps_schedule_us = now_us;
+                }
+            }
+        }
+
         sleep_ms(1);
     }
 

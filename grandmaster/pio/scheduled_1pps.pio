@@ -15,7 +15,7 @@
 ; Timing:
 ; - Runs at system clock / 3 (83.33 MHz for 250 MHz system)
 ; - 12ns per tick
-; - Pulse width: 32 ticks = 384ns
+; - Pulse width: ~1.2ms (nested loop)
 
 .program scheduled_1pps
 
@@ -27,10 +27,19 @@ countdown_loop:
     jmp x-- countdown_loop  ; Count down to zero (1 cycle per iteration)
 
     ; Generate pulse at second boundary
-    ; 100ns pulse width - enables sub-microsecond phase measurement
-    ; 100ns ≈ 8 cycles @ 12ns/cycle
-    set pins, 1             ; Pulse high (1 cycle)
-    nop [6]                 ; Delay 7 cycles (total 8 cycles = 96ns)
+    ; ~1.2ms pulse for scope visibility at ms/div timebase
+    ; Nested loop: 32 outer * (32 + 32*97 + 1) = 32 * 3137 = 100384 ticks
+    ; 100384 * 12ns = 1.205ms
+    set pins, 1             ; Pulse high
+    set y, 31               ; Outer: 32 iterations
+pulse_outer:
+    set x, 31 [31]          ; Inner: 32 iters + 32 cycle delay
+pulse_inner:
+    nop [31]                ; 32 cycles
+    nop [31]                ; 32 cycles
+    nop [31]                ; 32 cycles
+    jmp x-- pulse_inner     ; 1 cycle; inner = 32 * 97 = 3104
+    jmp y-- pulse_outer     ; 1 cycle; outer = 32 * (32+3104+1) = 100384
     set pins, 0             ; Pulse low
 .wrap                       ; Back to waiting for next reload
 

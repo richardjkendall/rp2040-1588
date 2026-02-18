@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-LTSP Test Harness v0.2 — Dual USB Serial Monitor
+LTSP Test Harness v0.3 — Dual USB Serial Monitor
 
 Reads GM and Receiver USB serial simultaneously, correlates by sequence
 number, and provides live validation of the LTSP protocol chain.
 
-Receiver v0.2 CSV format (9 columns):
+Receiver v0.3 CSV format (11 columns):
     seq, d_total_ns, d_detrended_ns, offset_ns, drift_ns_per_s,
-    drift_sigma_ns, gm_sigma_ns, gm_a1_ppb, 1pps_interval_ticks
+    drift_sigma_ns, gm_sigma_ns, gm_a1_ppb, 1pps_interval_ticks,
+    clock_error_ns, sync_state
 
 Usage:
     python3 ltsp_test_harness.py /dev/tty.usbmodemXXXX /dev/tty.usbmodemYYYY
@@ -53,6 +54,8 @@ class RXSample:
     gm_sigma_ns: float
     gm_a1_ppb: float
     interval_ticks: int
+    clock_error_ns: int
+    sync_state: str
     timestamp: float         # host wall clock
 
 @dataclass
@@ -113,12 +116,12 @@ def parse_gm_stats(line: str, stats: GMStats):
         stats.sigma_ns = float(m.group(3))
 
 def parse_rx_csv(line: str, now: float):
-    """Parse a receiver v0.2 CSV line. Returns RXSample or None."""
+    """Parse a receiver v0.3 CSV line. Returns RXSample or None."""
     line = line.strip()
     if not line or line.startswith('#'):
         return None
     parts = line.split(',')
-    if len(parts) < 9:
+    if len(parts) < 11:
         return None
     try:
         return RXSample(
@@ -131,6 +134,8 @@ def parse_rx_csv(line: str, now: float):
             gm_sigma_ns=float(parts[6]),
             gm_a1_ppb=float(parts[7]),
             interval_ticks=int(parts[8]),
+            clock_error_ns=int(parts[9]),
+            sync_state=parts[10].strip(),
             timestamp=now,
         )
     except (ValueError, IndexError):
@@ -189,11 +194,13 @@ class TestHarness:
         self.d_total_stats = RunningStats()
         self.d_detrended_stats = RunningStats()
         self.offset_stats = RunningStats()
+        self.clock_error_stats = RunningStats()
         self.tx_latency_stats = RunningStats()
 
         # Latest receiver-reported values
         self.last_drift_ns_per_s = 0.0
         self.last_drift_sigma_ns = 0.0
+        self.last_sync_state = "INIT"
         self.converged = False  # True once receiver reports non-zero d_detrended
 
         # Packet loss
@@ -232,15 +239,21 @@ class TestHarness:
                 self.d_detrended_stats.update(s.d_detrended_ns)
                 self.offset_stats.update(s.offset_ns)
 
+            # Clock error stats (only when clock is disciplined)
+            if s.sync_state in ("ACQUIRING", "LOCKED") and s.clock_error_ns != 0:
+                self.clock_error_stats.update(s.clock_error_ns)
+
             self.d_total_stats.update(s.d_total_ns)
             self.last_drift_ns_per_s = s.drift_ns_per_s
             self.last_drift_sigma_ns = s.drift_sigma_ns
+            self.last_sync_state = s.sync_state
 
             # Emit CSV to stdout
             print(f"{s.seq},{s.timestamp - self.start_time:.3f},"
                   f"{s.d_total_ns},{s.d_detrended_ns},{s.offset_ns},"
                   f"{s.drift_ns_per_s:.1f},{s.drift_sigma_ns:.1f},"
-                  f"{s.gm_sigma_ns:.1f},{s.gm_a1_ppb:.3f}",
+                  f"{s.gm_sigma_ns:.1f},{s.gm_a1_ppb:.3f},"
+                  f"{s.clock_error_ns},{s.sync_state}",
                   flush=True)
 
     def dashboard(self):
@@ -249,7 +262,7 @@ class TestHarness:
             elapsed = time.time() - self.start_time
             lines = []
             lines.append(f"{'='*72}")
-            lines.append(f" LTSP Test Harness v0.2  |  {elapsed:.0f}s elapsed")
+            lines.append(f" LTSP Test Harness v0.3  |  {elapsed:.0f}s elapsed")
             lines.append(f"{'='*72}")
 
             # GM status
@@ -270,7 +283,7 @@ class TestHarness:
             lines.append(f" RX  | Packets: {total_rx}  "
                          f"Seq gaps: {self.rx_seq_gaps}  "
                          f"Errors: GM={self.gm_errors} RX={self.rx_errors}  "
-                         f"Converged: {'YES' if self.converged else 'NO'}")
+                         f"State: {self.last_sync_state}")
 
             # Drift characterisation (from receiver's regression)
             drift_ppm = self.last_drift_ns_per_s / 1000.0
@@ -282,11 +295,22 @@ class TestHarness:
 
             # De-trended jitter (only meaningful after convergence)
             if self.converged:
-                lines.append(f" CLK | Detrended: {self.d_detrended_stats.summary(' ns')}")
+                lines.append(f" JIT | Detrended: {self.d_detrended_stats.summary(' ns')}")
                 lines.append(f"      | Offset:    {self.offset_stats.summary(' ns')}")
             else:
-                lines.append(f" CLK | Waiting for drift regression to converge "
+                lines.append(f" JIT | Waiting for drift regression to converge "
                              f"(~60 samples)...")
+
+            lines.append(f"{'-'*72}")
+
+            # Clock discipline
+            if self.clock_error_stats.n > 0:
+                lines.append(f" CLK | Error:  {self.clock_error_stats.summary(' ns')}")
+                clk_err_us = self.clock_error_stats.std / 1000.0
+                lines.append(f"      | Sigma:  {clk_err_us:.1f} us  "
+                             f"Mean: {self.clock_error_stats.mean/1000.0:+.1f} us")
+            else:
+                lines.append(f" CLK | Clock not yet disciplined")
 
             # Verdicts
             lines.append(f"{'='*72}")
@@ -317,6 +341,24 @@ class TestHarness:
                     verdicts.append(f"PASS: Drift sigma = {sigma_ns:.0f} ns")
                 else:
                     verdicts.append(f"WARN: Drift sigma = {sigma_ns:.0f} ns (high)")
+
+                # Clock error verdict
+                if self.clock_error_stats.n >= 10:
+                    clk_sigma_us = self.clock_error_stats.std / 1000.0
+                    clk_mean_us = abs(self.clock_error_stats.mean / 1000.0)
+                    if clk_sigma_us < 100 and clk_mean_us < 100:
+                        verdicts.append(f"PASS: Clock error sigma = {clk_sigma_us:.1f} us, "
+                                       f"mean = {self.clock_error_stats.mean/1000.0:+.1f} us")
+                    else:
+                        verdicts.append(f"WARN: Clock error sigma = {clk_sigma_us:.1f} us, "
+                                       f"mean = {self.clock_error_stats.mean/1000.0:+.1f} us")
+
+                if self.last_sync_state == "LOCKED":
+                    verdicts.append("PASS: Sync state = LOCKED")
+                elif self.last_sync_state == "ACQUIRING":
+                    verdicts.append(f"INFO: Sync state = ACQUIRING")
+                else:
+                    verdicts.append(f"WARN: Sync state = {self.last_sync_state}")
             else:
                 verdicts.append("... collecting samples ...")
 
@@ -429,7 +471,8 @@ def main():
 
     # CSV header to stdout
     print("# seq,elapsed_s,d_total_ns,d_detrended_ns,offset_ns,"
-          "drift_ns_per_s,drift_sigma_ns,gm_sigma_ns,gm_a1_ppb",
+          "drift_ns_per_s,drift_sigma_ns,gm_sigma_ns,gm_a1_ppb,"
+          "clock_error_ns,sync_state",
           flush=True)
 
     # Start reader threads

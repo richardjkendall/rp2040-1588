@@ -1,12 +1,14 @@
 # ============================================================================
-# LTSP Receiver v0.2 - Drift-compensated min filter
-# Core 0: PIO counter + HW timestamp FIFO drain
-# Core 1: W5500 Ethernet + LTSP PDU reception + CSV output
+# LTSP Receiver v0.3 - Clock discipline + 1PPS output
+# Core 0: PIO counter + HW timestamp FIFO drain + 1PPS scheduling
+# Core 1: W5500 Ethernet + LTSP PDU reception + clock discipline + CSV output
 #
 # Uses local copies of shared files (not shared with PTP slave)
 # ============================================================================
 add_executable(ltsp_receiver
     main.c
+    ltsp_clock.c
+    pps_scheduler.c
     w5500_simple.c
     eth_simple.c
 )
@@ -40,6 +42,7 @@ target_link_libraries(ltsp_receiver
 # Generate PIO headers (reference originals — PIO programs are not modified)
 pico_generate_pio_header(ltsp_receiver ${CMAKE_SOURCE_DIR}/slave/pio/counter_simple.pio)
 pico_generate_pio_header(ltsp_receiver ${CMAKE_SOURCE_DIR}/slave/pio/int_timestamp.pio)
+pico_generate_pio_header(ltsp_receiver ${CMAKE_SOURCE_DIR}/grandmaster/pio/scheduled_1pps.pio)
 
 # Enable USB output
 pico_enable_stdio_usb(ltsp_receiver 1)
