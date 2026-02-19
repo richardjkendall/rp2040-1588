@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-LTSP Test Harness v0.3 — Dual USB Serial Monitor
+LTSP Test Harness v0.4 — Dual USB Serial Monitor
 
 Reads GM and Receiver USB serial simultaneously, correlates by sequence
 number, and provides live validation of the LTSP protocol chain.
 
-Receiver v0.3 CSV format (11 columns):
+Receiver v0.4 CSV format (11 columns):
     seq, d_total_ns, d_detrended_ns, offset_ns, drift_ns_per_s,
     drift_sigma_ns, gm_sigma_ns, gm_a1_ppb, 1pps_interval_ticks,
     clock_error_ns, sync_state
@@ -262,7 +262,7 @@ class TestHarness:
             elapsed = time.time() - self.start_time
             lines = []
             lines.append(f"{'='*72}")
-            lines.append(f" LTSP Test Harness v0.3  |  {elapsed:.0f}s elapsed")
+            lines.append(f" LTSP Test Harness v0.4  |  {elapsed:.0f}s elapsed")
             lines.append(f"{'='*72}")
 
             # GM status
@@ -303,14 +303,15 @@ class TestHarness:
 
             lines.append(f"{'-'*72}")
 
-            # Clock discipline
+            # Clock one-way delay (monitoring)
             if self.clock_error_stats.n > 0:
-                lines.append(f" CLK | Error:  {self.clock_error_stats.summary(' ns')}")
-                clk_err_us = self.clock_error_stats.std / 1000.0
-                lines.append(f"      | Sigma:  {clk_err_us:.1f} us  "
-                             f"Mean: {self.clock_error_stats.mean/1000.0:+.1f} us")
+                lines.append(f" CLK | One-way delay: {self.clock_error_stats.summary(' ns')}")
+                clk_sigma_us = self.clock_error_stats.std / 1000.0
+                clk_mean_us = self.clock_error_stats.mean / 1000.0
+                lines.append(f"      | Sigma: {clk_sigma_us:.1f} us  "
+                             f"Mean: {clk_mean_us:+.1f} us (expected ~constant)")
             else:
-                lines.append(f" CLK | Clock not yet disciplined")
+                lines.append(f" CLK | Clock not yet initialized")
 
             # Verdicts
             lines.append(f"{'='*72}")
@@ -342,16 +343,15 @@ class TestHarness:
                 else:
                     verdicts.append(f"WARN: Drift sigma = {sigma_ns:.0f} ns (high)")
 
-                # Clock error verdict
+                # Clock stability verdict (one-way delay should be ~constant)
                 if self.clock_error_stats.n >= 10:
                     clk_sigma_us = self.clock_error_stats.std / 1000.0
-                    clk_mean_us = abs(self.clock_error_stats.mean / 1000.0)
-                    if clk_sigma_us < 100 and clk_mean_us < 100:
-                        verdicts.append(f"PASS: Clock error sigma = {clk_sigma_us:.1f} us, "
-                                       f"mean = {self.clock_error_stats.mean/1000.0:+.1f} us")
+                    if clk_sigma_us < 100:
+                        verdicts.append(f"PASS: One-way delay sigma = {clk_sigma_us:.1f} us "
+                                       f"(stable)")
                     else:
-                        verdicts.append(f"WARN: Clock error sigma = {clk_sigma_us:.1f} us, "
-                                       f"mean = {self.clock_error_stats.mean/1000.0:+.1f} us")
+                        verdicts.append(f"WARN: One-way delay sigma = {clk_sigma_us:.1f} us "
+                                       f"(unstable — frequency tracking issue?)")
 
                 if self.last_sync_state == "LOCKED":
                     verdicts.append("PASS: Sync state = LOCKED")

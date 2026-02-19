@@ -1,17 +1,17 @@
 /**
- * LTSP Receiver v0.3 - Dual Core
+ * LTSP Receiver v0.4 - GPS-Domain, Regression-Only
  *
  * Core 0: PIO counter management + HW timestamp FIFO drain + 1PPS scheduling
- * Core 1: W5500 Ethernet + LTSP PDU reception + clock discipline + CSV output
+ * Core 1: W5500 Ethernet + LTSP PDU reception + clock + CSV output
  *
- * v0.3: Clock reconstruction with PI servo and 1PPS output.
+ * v0.4: GPS-domain clock with regression-only frequency. No servo.
  *
  * Pipeline 1 (measurement): Raw PIO timestamps → d_total → drift regression
  *   → de-trending → min filter → offset_ns (jitter metric)
  *
- * Pipeline 2 (clock): Disciplined clock maintained via PI servo, initialised
- *   at convergence from Pipeline 1's outputs. Computes clock error
- *   (disciplined clock vs GM estimate), steers frequency, drives 1PPS.
+ * Pipeline 2 (clock): Clock = GPS time (offset by one-way delay).
+ *   Frequency set directly from drift regression a1. No PI servo.
+ *   1PPS at clock second boundaries ≈ GPS second boundaries.
  */
 
 #include <stdio.h>
@@ -100,7 +100,6 @@ static uint32_t drift_sample_count = 0;
 // Clock discipline
 static ltsp_clock_state_t clock_state;
 static bool clock_initialized = false;  // One-shot: set initial clock at convergence
-static int64_t gps_phase_correction_ns = 0;  // PIO-to-GPS second boundary offset
 
 // Stats
 static uint32_t pdu_count = 0;
@@ -261,59 +260,33 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
             int64_t d_min = ltsp_min_filter_get_min(&min_filter);
             offset_ns = d_detrended - d_min;
 
-            // --- Clock discipline (Pipeline 2) ---
+            // --- Clock (Pipeline 2) ---
+            // GPS-domain clock: frequency from regression, no servo.
             double drift_ns_per_s_now = drift_reg.result.a1;
 
-            // Absolute minimum one-way delay estimate:
-            // d_total = d_total_ref + d_total_rel
-            // d_total_rel = predicted + d_detrended
-            // d_detrended = d_min + offset_ns
-            // So: min_delay_abs = d_total_ref + predicted + d_min
-            int64_t min_delay_abs = d_total_ref_ns + (int64_t)predicted + d_min;
+            // Update frequency from regression every packet
+            ltsp_clock_update_frequency(&clock_state, drift_ns_per_s_now);
+
+            // Compute GPS time at this RX moment from known quantities:
+            // GPS_TX_prev (exact) + PIO_elapsed (crystal) * scale_factor (correction)
+            int64_t elapsed_pio_ns = t_rx_ns - prev_rx.t_rx_ns;
+            int64_t gps_now = pdu.prev_tx_timestamp +
+                (int64_t)(elapsed_pio_ns * clock_state.scale_factor);
 
             if (!clock_initialized) {
-                // First convergence: initialize disciplined clock
-                // Deferred model gives us GPS time at prev packet's RX.
-                // Extrapolate to current packet's RX time so the clock
-                // starts at the right phase (avoids 1-second offset).
-                int64_t gps_time_at_prev_rx = pdu.prev_tx_timestamp + min_delay_abs;
-                int64_t elapsed_pio_ns = t_rx_ns - prev_rx.t_rx_ns;
-                int64_t gps_time_at_this_rx = gps_time_at_prev_rx + elapsed_pio_ns;
-
-                // Phase correction: align 1PPS with GPS second boundaries.
-                // The clock runs in PIO domain (for signed servo errors), but
-                // we shift it so its second boundaries match GPS time.
-                // phase = min_delay_abs % 1e9 = (PIO_frac - GPS_frac)
-                gps_phase_correction_ns = min_delay_abs % 1000000000LL;
-                if (gps_phase_correction_ns < 0)
-                    gps_phase_correction_ns += 1000000000LL;
-
-                ltsp_clock_set_initial(&clock_state,
-                    gps_time_at_this_rx - gps_phase_correction_ns,
-                    drift_ns_per_s_now);
+                ltsp_clock_set_initial(&clock_state, gps_now, drift_ns_per_s_now);
                 clock_initialized = true;
-                // Recapture clock_at_this_rx (was 0 because clock wasn't valid)
                 clock_at_this_rx = (int64_t)get_ltsp_time_ns();
-
-                printf("# CLOCK: Phase correction %lld ns\n",
-                       (long long)gps_phase_correction_ns);
-            } else if (prev_rx.clock_at_rx == 0) {
-                // Skip discipline if prev clock reading is invalid
-                // (shouldn't happen after the recapture above, but safety net)
-                ltsp_clock_advance(&clock_state);
             } else {
-                // Compute clock error using saved disciplined clock from prev RX
-                // Subtract same phase correction so it cancels in the error
-                int64_t gm_estimate = pdu.prev_tx_timestamp + min_delay_abs
-                                      - gps_phase_correction_ns;
-                clock_error_ns = prev_rx.clock_at_rx - gm_estimate;
+                // Re-anchor clock to PIO-derived GPS time every packet.
+                // Eliminates drift from time_us_64() free-running.
+                ltsp_clock_reanchor(&clock_state, gps_now);
+            }
 
-                // Advance clock to current time, then apply phase correction
-                ltsp_clock_advance(&clock_state);
-                ltsp_clock_discipline(&clock_state, clock_error_ns, 1.0);
-
-                // Update frequency directly from regression (not PI integral)
-                ltsp_clock_update_frequency(&clock_state, drift_ns_per_s_now);
+            // Clock error for monitoring: apparent one-way delay
+            // Should be ~constant + jitter if frequency tracks correctly
+            if (prev_rx.clock_at_rx != 0) {
+                clock_error_ns = prev_rx.clock_at_rx - pdu.prev_tx_timestamp;
             }
         }
 
@@ -321,10 +294,11 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
         double drift_ns_per_s = drift_reg.result.valid ? drift_reg.result.a1 : 0.0;
         double drift_sigma_ns = drift_reg.result.valid ? drift_reg.result.sigma : 999999.0;
 
-        // CSV output (v0.3: 11 columns)
+        // CSV output (v0.4: 13 columns — added scale_factor, clock_ns for diagnostics)
         // seq,d_total_ns,d_detrended_ns,offset_ns,drift_ns_per_s,drift_sigma_ns,
-        // gm_sigma_ns,gm_a1_ppb,1pps_interval_ticks,clock_error_ns,sync_state
-        printf("%u,%lld,%lld,%lld,%.1f,%.1f,%.1f,%.3f,%lu,%lld,%s\n",
+        // gm_sigma_ns,gm_a1_ppb,1pps_interval_ticks,clock_error_ns,sync_state,
+        // scale_factor,clock_ns
+        printf("%u,%lld,%lld,%lld,%.1f,%.1f,%.1f,%.3f,%lu,%lld,%s,%.12f,%lld\n",
                prev_rx.sequence,
                (long long)d_total_ns,
                (long long)d_detrended,
@@ -335,7 +309,9 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
                (double)pdu.source_freq_drift,
                (unsigned long)pdu.last_1pps_interval,
                (long long)clock_error_ns,
-               ltsp_sync_state_name(clock_state.state));
+               ltsp_sync_state_name(clock_state.state),
+               clock_state.scale_factor,
+               (long long)clock_state.clock_ns);
         csv_line_count++;
         drift_sample_count++;
     } else {
@@ -385,7 +361,8 @@ void core1_network_entry(void) {
     // Print CSV header
     printf("# seq,d_total_ns,d_detrended_ns,offset_ns,"
            "drift_ns_per_s,drift_sigma_ns,gm_sigma_ns,gm_a1_ppb,"
-           "1pps_interval_ticks,clock_error_ns,sync_state\n");
+           "1pps_interval_ticks,clock_error_ns,sync_state,"
+           "scale_factor,clock_ns\n");
 
     uint64_t last_stats_time_us = 0;
     uint8_t rx_buffer[W5500_MAX_FRAME_SIZE];
@@ -466,7 +443,7 @@ int main() {
     stdio_init_all();
     sleep_ms(2000);
 
-    printf("\n=== LTSP Receiver v0.3 - Dual Core ===\n");
+    printf("\n=== LTSP Receiver v0.4 - GPS-Domain, Regression-Only ===\n");
     printf("System clock: %lu MHz\n", clock_get_hz(clk_sys) / 1000000);
 
     // Initialize PIO counter (free-running 83.33 MHz)

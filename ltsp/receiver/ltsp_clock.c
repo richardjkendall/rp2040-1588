@@ -1,10 +1,10 @@
 /**
- * LTSP Clock Discipline — PI servo + state machine
+ * LTSP Clock — GPS-domain, regression-only frequency
  *
  * Maintains a disciplined GPS time estimate on the receiver by:
- * 1. Initializing from drift regression + min filter at convergence
+ * 1. Initializing clock to GPS TX time (offset by one-way delay)
  * 2. Interpolating between packets using crystal scale_factor
- * 3. Steering frequency via PI controller on clock error
+ * 3. Setting frequency directly from drift regression (no servo)
  * 4. Managing sync state (INIT → ACQUIRING → LOCKED → HOLDOVER)
  */
 
@@ -14,12 +14,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-
-/* PI servo gains (conservative for one-way protocol) */
-#define PI_KP               0.3
-#define PI_KI               0.001
-#define PI_MAX_INTEGRAL_NS  1000000000.0   /* ±1 second anti-windup */
-#define PI_MAX_CORRECTION_NS 100000        /* ±100 µs per step */
 
 /* Global state (accessible from both cores via get_ltsp_time_ns) */
 static volatile int64_t  g_clock_ns = 0;
@@ -32,8 +26,6 @@ void ltsp_clock_init(ltsp_clock_state_t *st) {
     st->clock_update_us = 0;
     st->scale_factor = 1.0;
     st->base_drift_ns_per_s = 0.0;
-    st->pi_integral = 0.0;
-    st->freq_offset_ppb = 0.0;
     st->state = LTSP_SYNC_INIT;
     st->valid_packet_count = 0;
     st->locked_count = 0;
@@ -75,8 +67,6 @@ void ltsp_clock_set_initial(ltsp_clock_state_t *st,
     st->clock_ns = gps_time_ns;
     st->clock_update_us = now_us;
     st->clock_valid = true;
-    st->pi_integral = 0.0;
-    st->freq_offset_ppb = drift_ns_per_s;
 
     /* Publish to global (atomic on ARM for aligned writes) */
     g_scale_factor = st->scale_factor;
@@ -104,49 +94,21 @@ void ltsp_clock_advance(ltsp_clock_state_t *st) {
     g_clock_update_us = st->clock_update_us;
 }
 
-int64_t ltsp_clock_discipline(ltsp_clock_state_t *st,
-                              int64_t clock_error_ns,
-                              double dt_sec) {
-    if (dt_sec <= 0.0) return 0;
+void ltsp_clock_reanchor(ltsp_clock_state_t *st, int64_t gps_time_ns) {
+    if (!st->clock_valid) return;
 
-    st->last_clock_error_ns = clock_error_ns;
-
-    /* Phase step for large errors */
-    if (llabs(clock_error_ns) > LTSP_PHASE_STEP_THRESHOLD_NS) {
-        st->clock_ns -= clock_error_ns;
-        st->pi_integral = 0.0;
-        g_clock_ns = st->clock_ns;
-        printf("# CLOCK: Phase step %+lld ns\n", (long long)-clock_error_ns);
-        return clock_error_ns;
-    }
-
-    /* Phase-only proportional correction.
-     * Frequency is set directly from the drift regression (see
-     * ltsp_clock_update_frequency), NOT from the PI integral.
-     * Using PI integral for frequency caused the servo to converge
-     * scale_factor → 1.0 (crystal rate), undoing the drift correction,
-     * because the PIO-domain error signal has no GPS frequency info. */
-    double correction = PI_KP * (double)clock_error_ns;
-
-    /* Limit correction magnitude */
-    if (correction > PI_MAX_CORRECTION_NS)
-        correction = PI_MAX_CORRECTION_NS;
-    else if (correction < -PI_MAX_CORRECTION_NS)
-        correction = -PI_MAX_CORRECTION_NS;
-
-    int64_t correction_ns = (int64_t)correction;
-    st->clock_ns -= correction_ns;
+    uint64_t now_us = time_us_64();
+    st->clock_ns = gps_time_ns;
+    st->clock_update_us = now_us;
 
     /* Publish */
     g_clock_ns = st->clock_ns;
-
-    return correction_ns;
+    g_clock_update_us = st->clock_update_us;
 }
 
 void ltsp_clock_update_frequency(ltsp_clock_state_t *st,
                                  double drift_ns_per_s) {
     st->base_drift_ns_per_s = drift_ns_per_s;
-    st->freq_offset_ppb = drift_ns_per_s;
     st->scale_factor = 1.0 - (drift_ns_per_s / 1e9);
     g_scale_factor = st->scale_factor;
 }

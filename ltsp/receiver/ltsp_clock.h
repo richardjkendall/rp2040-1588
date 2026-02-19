@@ -19,10 +19,8 @@ typedef struct {
     uint64_t clock_update_us;     /* System timer at last update */
     double   scale_factor;        /* Crystal correction (1.0 = nominal) */
 
-    /* PI servo */
-    double   base_drift_ns_per_s; /* Initial drift from regression */
-    double   pi_integral;         /* Accumulated residual frequency error (ns/s) */
-    double   freq_offset_ppb;     /* Total frequency correction */
+    /* Frequency */
+    double   base_drift_ns_per_s; /* Current drift from regression */
 
     /* State machine */
     ltsp_sync_state_t state;
@@ -73,20 +71,17 @@ void ltsp_clock_set_initial(ltsp_clock_state_t *st,
 
 /**
  * Advance clock_ns to current time using scale_factor interpolation.
- * Must be called before ltsp_clock_discipline() to bring clock up to date.
+ * Call each packet to keep clock_ns current.
  */
 void ltsp_clock_advance(ltsp_clock_state_t *st);
 
 /**
- * Apply PI servo discipline step.
- * Returns the correction applied (ns). Positive = clock was ahead, stepped back.
- *
- * @param clock_error_ns  Our clock minus GM estimate (positive = ahead)
- * @param dt_sec          Time since last discipline step (seconds)
+ * Re-anchor clock to a known GPS time (computed from PIO + regression).
+ * Eliminates accumulated drift from time_us_64() free-running.
+ * Call each packet with GPS time computed as:
+ *   gps_time = prev_tx_timestamp + elapsed_pio_ns * scale_factor
  */
-int64_t ltsp_clock_discipline(ltsp_clock_state_t *st,
-                              int64_t clock_error_ns,
-                              double dt_sec);
+void ltsp_clock_reanchor(ltsp_clock_state_t *st, int64_t gps_time_ns);
 
 /**
  * Update scale_factor directly from drift regression.

@@ -1,0 +1,4 @@
+# elapsed_s,phase_us,yellow_edge_px,pink_edge_px,file
+30.0,,,, scope_0030s.bmp
+60.4,1280.5,356,416,scope_0060s.bmp
+90.7,1173.8,356,411,scope_0090s.bmp
