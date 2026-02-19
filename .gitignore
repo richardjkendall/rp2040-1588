@@ -1,3 +1,4 @@
 pico-sdk
 build
 .env
+__pycache__

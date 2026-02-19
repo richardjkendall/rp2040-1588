@@ -3,35 +3,35 @@
 LTSP Integration Test — Automated capture with serial logging and scope phase measurement.
 
 Reboots the RX device, captures serial data from both GM and RX,
-takes periodic scope screenshots, measures 1PPS phase offset from
-the scope image, and saves everything to a timestamped output directory.
+measures 1PPS phase offset from scope waveform data at ~1 Hz,
+and saves everything to a timestamped output directory.
 
 Usage:
-    python3 ltsp_integration_test.py [--duration 300] [--scope-interval 60]
+    python3 ltsp_integration_test.py [--duration 300] [--phase-interval 1]
 
 Requires:
     - pyserial
-    - python-vxi11  [optional, for scope captures]
-    - Pillow        [optional, for scope image analysis]
+    - python-vxi11  (for scope waveform capture)
+    - numpy
     - picotool      (for RX reboot)
 
 Output directory (tools/runs/<timestamp>/):
     - rx_raw.csv        Raw serial from RX (all lines including comments)
     - gm_raw.log        Raw serial from GM
     - capture.csv       Parsed RX CSV data (test harness format)
-    - scope_<NNN>s.bmp  Scope screenshots at configured intervals
-    - phase.csv         Phase measurements from scope images
+    - phase.csv         Phase measurements from scope waveforms
     - summary.txt       Final test harness dashboard + verdicts
 """
 
-import sys
+import math
 import os
+import re
 import serial
 import subprocess
+import sys
 import threading
 import time
 import argparse
-import glob as globmod
 from datetime import datetime
 
 # Add tools dir to path so we can import from test harness
@@ -55,13 +55,10 @@ RX_BAUD = 115200
 GM_PORT_PATTERN = '/dev/cu.usbmodem1101'
 RX_PORT_PATTERN = '/dev/cu.usbmodem21101'
 
-# Trace colors (exact RGB from scope BMP)
-YELLOW_RGB = (255, 255, 0)    # CH1 = GM
-PINK_RGB = (205, 0, 205)      # CH2 = RX
-
 
 def find_serial_port(pattern):
     """Find a serial port matching pattern. Returns path or None."""
+    import glob as globmod
     matches = globmod.glob(pattern)
     if matches:
         return matches[0]
@@ -92,168 +89,136 @@ def reboot_rx():
 
 
 # ---------------------------------------------------------------------------
-# Scope capture and phase measurement
+# Scope waveform phase measurement
 # ---------------------------------------------------------------------------
 
-def capture_scope_bmp(output_path):
-    """Capture a scope screenshot via VXI-11. Returns True on success."""
-    try:
+def parse_waveform(raw):
+    """Parse Siglent binary waveform block: #<ndigits><nbytes><data>"""
+    import numpy as np
+    idx = raw.index(b'#')
+    ndigits = int(raw[idx+1:idx+2])
+    nbytes = int(raw[idx+2:idx+2+ndigits])
+    data = raw[idx+2+ndigits:idx+2+ndigits+nbytes]
+    return np.frombuffer(data, dtype=np.int8).astype(float)
+
+
+def parse_sara(sara_raw):
+    """Parse SARA response like 'SARA 100.0MSa' -> float Hz."""
+    sara_val = sara_raw.split()[-1]
+    multiplier = 1.0
+    if 'GSa' in sara_val:
+        multiplier = 1e9
+    elif 'MSa' in sara_val:
+        multiplier = 1e6
+    elif 'kSa' in sara_val:
+        multiplier = 1e3
+    sara_num = re.match(r'([0-9.eE+\-]+)', sara_val)
+    return float(sara_num.group(1)) * multiplier
+
+
+def find_rising_edge(waveform, threshold=None):
+    """Find the first rising edge crossing the threshold.
+    Returns fractional sample index via linear interpolation."""
+    import numpy as np
+    if threshold is None:
+        lo, hi = np.min(waveform), np.max(waveform)
+        threshold = lo + 0.5 * (hi - lo)
+
+    below = waveform[:-1] < threshold
+    above = waveform[1:] >= threshold
+    crossings = np.where(below & above)[0]
+
+    if len(crossings) == 0:
+        return None
+
+    i = crossings[0]
+    frac = (threshold - waveform[i]) / (waveform[i+1] - waveform[i])
+    return i + frac
+
+
+def measure_scope_phase(instr):
+    """Take one phase measurement from scope waveform data.
+    Returns (phase_ns, sample_rate_hz) or (None, None).
+
+    Rejects measurements where |phase| > half the capture window,
+    which indicates the scope captured CH1 and CH2 across a 1PPS boundary
+    (non-simultaneous channel acquisition)."""
+    sara = parse_sara(instr.ask('SARA?'))
+    sample_period_ns = 1e9 / sara
+
+    instr.write('WFSU SP,0,NP,0,FP,0,SN,0')
+    ch1 = parse_waveform(instr.ask_raw(b'C1:WF? DAT2\n'))
+    ch2 = parse_waveform(instr.ask_raw(b'C2:WF? DAT2\n'))
+
+    e1 = find_rising_edge(ch1)
+    e2 = find_rising_edge(ch2)
+
+    if e1 is None or e2 is None:
+        return None, sara
+
+    return (e2 - e1) * sample_period_ns, sara
+
+
+class PhaseMeasurer:
+    """Measures 1PPS phase offset from scope waveform data in a background thread."""
+
+    def __init__(self, interval_s=1.0):
+        self.interval_s = interval_s
+        self.running = False
+        self.thread = None
+        self.lock = threading.Lock()
+
+        # Results
+        self.measurements = []    # list of (elapsed_s, phase_ns)
+        self.sample_rate = None
+        self.errors = 0
+        self.no_edge_count = 0
+
+    def start(self, start_time):
+        self.start_time = start_time
+        self.running = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+
+    def get_stats(self):
+        """Return (measurements_copy, mean_ns, sigma_ns, min_ns, max_ns)."""
+        import numpy as np
+        with self.lock:
+            meas = list(self.measurements)
+        if not meas:
+            return meas, 0, 0, 0, 0
+        phases = [m[1] for m in meas]
+        arr = np.array(phases)
+        return meas, arr.mean(), arr.std(), arr.min(), arr.max()
+
+    def _run(self):
         import vxi11
-    except ImportError:
-        eprint("[SCOPE] vxi11 not available, skipping screenshot")
-        return False
 
-    try:
-        instr = vxi11.Instrument(SCOPE_IP)
-        instr.open()
-        data = instr.ask_raw(b'SCDP\n')
-        with open(output_path, 'wb') as f:
-            f.write(data)
-        instr.close()
-        return True
-    except Exception as e:
-        eprint(f"[SCOPE] Capture error: {e}")
-        return False
+        while self.running:
+            try:
+                instr = vxi11.Instrument(SCOPE_IP)
+                instr.open()
+                try:
+                    phase_ns, sara = measure_scope_phase(instr)
+                    self.sample_rate = sara
+                finally:
+                    instr.close()
 
+                elapsed = time.time() - self.start_time
 
-def detect_grid_spacing(img):
-    """
-    Auto-detect the horizontal grid spacing (pixels per division) from
-    gray grid-line dots along the center horizontal axis.
+                if phase_ns is not None:
+                    with self.lock:
+                        self.measurements.append((elapsed, phase_ns))
+                else:
+                    self.no_edge_count += 1
 
-    Returns px_per_div or None if detection fails.
-    """
-    w, h = img.size
-    pixels = img.load()
-    mid_y = h // 2 + 60  # Slightly below center to hit the center grid line
+            except Exception:
+                self.errors += 1
 
-    # Find gray pixels along this row (grid dots/dashes)
-    gray_xs = []
-    for x in range(w):
-        r, g, b = pixels[x, mid_y][:3]
-        if 30 < r < 140 and abs(r - g) < 10 and abs(g - b) < 10:
-            gray_xs.append(x)
-
-    # Keep only internal dots (exclude left/right border clusters)
-    if len(gray_xs) < 4:
-        return None
-    left_edge = gray_xs[0]
-    right_edge = gray_xs[-1]
-    margin = (right_edge - left_edge) * 0.05
-    internal = [x for x in gray_xs if x > left_edge + margin and x < right_edge - margin]
-
-    if len(internal) < 3:
-        return None
-
-    # Cluster adjacent pixels (grid lines can be 1-3 px wide)
-    clusters = []
-    for x in internal:
-        if not clusters or x - clusters[-1][-1] > 5:
-            clusters.append([x])
-        else:
-            clusters[-1].append(x)
-
-    centers = [sum(c) / len(c) for c in clusters]
-    if len(centers) < 3:
-        return None
-
-    # Compute spacings between adjacent grid lines
-    spacings = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)]
-
-    # Filter outliers (e.g. sub-division ticks) — keep spacings within 20% of median
-    spacings.sort()
-    median = spacings[len(spacings) // 2]
-    valid = [s for s in spacings if abs(s - median) / median < 0.2]
-
-    if not valid:
-        return None
-
-    return sum(valid) / len(valid)
-
-
-def measure_phase_from_bmp(bmp_path, time_per_div_us):
-    """
-    Measure the 1PPS phase offset between yellow (GM) and pink (RX) traces
-    by finding the rising edge of each in the scope BMP image.
-
-    Grid spacing (px/div) is auto-detected from the gray grid dots.
-
-    Returns (phase_us, yellow_edge_x, pink_edge_x) or (None, None, None) on failure.
-    Phase is positive when RX rises after GM (RX lags).
-    """
-    try:
-        from PIL import Image
-    except ImportError:
-        return None, None, None
-
-    try:
-        img = Image.open(bmp_path)
-    except Exception:
-        return None, None, None
-
-    w, h = img.size
-    pixels = img.load()
-
-    # Auto-detect grid spacing
-    px_per_div = detect_grid_spacing(img)
-    if px_per_div is None:
-        return None, None, None
-
-    # For each x column, find the minimum Y for each trace color.
-    # Min Y = topmost pixel = highest voltage point.
-    # Baseline (LOW) has high min_y, pulse (HIGH) has low min_y.
-    yellow_min_y = {}
-    pink_min_y = {}
-
-    for y in range(h):
-        for x in range(w):
-            r, g, b = pixels[x, y][:3]
-            if (r, g, b) == YELLOW_RGB:
-                if x not in yellow_min_y or y < yellow_min_y[x]:
-                    yellow_min_y[x] = y
-            elif (r, g, b) == PINK_RGB:
-                if x not in pink_min_y or y < pink_min_y[x]:
-                    pink_min_y[x] = y
-
-    if not yellow_min_y or not pink_min_y:
-        return None, None, None
-
-    # Determine baseline and pulse Y levels for each trace
-    yellow_ys = sorted(yellow_min_y.values())
-    pink_ys = sorted(pink_min_y.values())
-
-    yellow_baseline = yellow_ys[len(yellow_ys) * 3 // 4]  # 75th percentile
-    yellow_pulse = yellow_ys[len(yellow_ys) // 10]         # 10th percentile
-    pink_baseline = pink_ys[len(pink_ys) * 3 // 4]
-    pink_pulse = pink_ys[len(pink_ys) // 10]
-
-    # Threshold at midpoint between baseline and pulse
-    yellow_thresh = (yellow_baseline + yellow_pulse) // 2
-    pink_thresh = (pink_baseline + pink_pulse) // 2
-
-    def find_rising_edge(min_y_by_x, threshold, baseline):
-        """Find x of first rising edge (min_y drops below threshold)."""
-        sorted_xs = sorted(min_y_by_x.keys())
-        in_baseline = False
-        for x in sorted_xs:
-            y = min_y_by_x[x]
-            if y >= baseline - 20:
-                in_baseline = True
-            elif in_baseline and y < threshold:
-                return x
-        return None
-
-    yellow_edge = find_rising_edge(yellow_min_y, yellow_thresh, yellow_baseline)
-    pink_edge = find_rising_edge(pink_min_y, pink_thresh, pink_baseline)
-
-    if yellow_edge is None or pink_edge is None:
-        return None, None, None
-
-    # Convert pixel distance to time
-    us_per_px = time_per_div_us / px_per_div
-    phase_us = (pink_edge - yellow_edge) * us_per_px
-
-    return phase_us, yellow_edge, pink_edge
+            time.sleep(self.interval_s)
 
 
 # ---------------------------------------------------------------------------
@@ -352,14 +317,12 @@ def main():
     parser = argparse.ArgumentParser(description='LTSP Integration Test')
     parser.add_argument('--duration', type=int, default=300,
                         help='Test duration in seconds (default: 300)')
-    parser.add_argument('--scope-interval', type=int, default=60,
-                        help='Scope screenshot interval in seconds (default: 60)')
+    parser.add_argument('--phase-interval', type=float, default=1.0,
+                        help='Phase measurement interval in seconds (default: 1.0)')
     parser.add_argument('--no-reboot', action='store_true',
                         help='Skip RX reboot at start')
     parser.add_argument('--no-scope', action='store_true',
-                        help='Skip scope screenshots')
-    parser.add_argument('--time-div', type=float, default=1000.0,
-                        help='Scope time base in us/div (default: 1000 = 1ms/div)')
+                        help='Skip scope phase measurements')
     parser.add_argument('--gm-port', type=str, default=None,
                         help=f'GM serial port (default: {GM_PORT_PATTERN})')
     parser.add_argument('--rx-port', type=str, default=None,
@@ -386,7 +349,8 @@ def main():
     eprint(f"GM port: {gm_port}")
     eprint(f"RX port: {rx_port}")
     eprint(f"Duration: {args.duration}s")
-    eprint(f"Scope: interval={args.scope_interval}s, time_div={args.time_div} us/div")
+    if not args.no_scope:
+        eprint(f"Phase: waveform measurement every {args.phase_interval}s")
     eprint()
 
     # Reboot RX
@@ -399,15 +363,15 @@ def main():
     gm_raw = open(os.path.join(run_dir, 'gm_raw.log'), 'w')
     rx_raw = open(os.path.join(run_dir, 'rx_raw.csv'), 'w')
     csv_out = open(os.path.join(run_dir, 'capture.csv'), 'w')
-    phase_csv = open(os.path.join(run_dir, 'phase.csv'), 'w')
+    phase_file = open(os.path.join(run_dir, 'phase.csv'), 'w')
 
     csv_out.write("# seq,elapsed_s,d_total_ns,d_detrended_ns,offset_ns,"
                   "drift_ns_per_s,drift_sigma_ns,gm_sigma_ns,gm_a1_ppb,"
                   "clock_error_ns,sync_state\n")
     csv_out.flush()
 
-    phase_csv.write("# elapsed_s,phase_us,yellow_edge_px,pink_edge_px,file\n")
-    phase_csv.flush()
+    phase_file.write("# elapsed_s,phase_ns\n")
+    phase_file.flush()
 
     # Test harness
     harness = TestHarness()
@@ -425,13 +389,19 @@ def main():
     gm_capture.start()
     rx_capture.start()
 
+    # Start phase measurement
+    phase_measurer = None
+    if not args.no_scope:
+        phase_measurer = PhaseMeasurer(interval_s=args.phase_interval)
+
     eprint("Capturing... (Ctrl+C to stop early)\n")
 
     # Main loop
     start_time = time.time()
-    last_scope_time = 0
-    scope_count = 0
-    phase_measurements = []
+    last_phase_write = 0  # track how many measurements we've written
+
+    if phase_measurer:
+        phase_measurer.start(start_time)
 
     try:
         while True:
@@ -441,32 +411,15 @@ def main():
                 eprint(f"\nDuration reached ({args.duration}s), stopping.")
                 break
 
-            # Scope capture + phase measurement at intervals
-            if (not args.no_scope and
-                    elapsed - last_scope_time >= args.scope_interval and
-                    elapsed > 5):
-                scope_count += 1
-                scope_file = f'scope_{int(elapsed):04d}s.bmp'
-                scope_path = os.path.join(run_dir, scope_file)
-
-                if capture_scope_bmp(scope_path):
-                    phase_us, yw_x, pk_x = measure_phase_from_bmp(
-                        scope_path, args.time_div)
-
-                    if phase_us is not None:
-                        phase_measurements.append(phase_us)
-                        phase_csv.write(
-                            f"{elapsed:.1f},{phase_us:.1f},{yw_x},{pk_x},{scope_file}\n")
-                        phase_csv.flush()
-                        eprint(f"[SCOPE] {scope_file}: phase = {phase_us:+.0f} us "
-                               f"(GM@px{yw_x}, RX@px{pk_x})")
-                    else:
-                        eprint(f"[SCOPE] {scope_file}: could not measure phase")
-                        phase_csv.write(
-                            f"{elapsed:.1f},,,, {scope_file}\n")
-                        phase_csv.flush()
-
-                last_scope_time = elapsed
+            # Write new phase measurements to CSV
+            if phase_measurer:
+                meas, mean_ns, sigma_ns, min_ns, max_ns = phase_measurer.get_stats()
+                new_count = len(meas)
+                if new_count > last_phase_write:
+                    for el, ph in meas[last_phase_write:]:
+                        phase_file.write(f"{el:.1f},{ph:.0f}\n")
+                    phase_file.flush()
+                    last_phase_write = new_count
 
             # Dashboard every 5s
             time.sleep(5)
@@ -475,22 +428,28 @@ def main():
             eprint('\033[2J\033[H', end='')
             eprint(harness.dashboard())
 
-            # Phase summary
-            if phase_measurements:
-                latest = phase_measurements[-1]
-                import math
-                mean_ph = sum(phase_measurements) / len(phase_measurements)
-                if len(phase_measurements) > 1:
-                    variance = sum((p - mean_ph)**2 for p in phase_measurements) / (
-                        len(phase_measurements) - 1)
-                    std_ph = math.sqrt(variance)
+            # Phase summary in dashboard
+            if phase_measurer:
+                meas, mean_ns, sigma_ns, min_ns, max_ns = phase_measurer.get_stats()
+                n = len(meas)
+                if n > 0:
+                    eprint(f"\n PHASE | n={n}  "
+                           f"mean={mean_ns/1000:+.1f} us  "
+                           f"sigma={sigma_ns/1000:.1f} us  "
+                           f"min={min_ns/1000:+.1f} us  "
+                           f"max={max_ns/1000:+.1f} us  "
+                           f"P-P={((max_ns-min_ns)/1000):.1f} us")
+                    if phase_measurer.no_edge_count > 0:
+                        eprint(f"        | No-edge: {phase_measurer.no_edge_count}  "
+                               f"Errors: {phase_measurer.errors}")
+                    # Show last 5 measurements
+                    recent = meas[-5:]
+                    recent_str = "  ".join(f"{ph/1000:+.1f}" for _, ph in recent)
+                    eprint(f"        | Recent (us): {recent_str}")
                 else:
-                    std_ph = 0.0
-                eprint(f"\n SCOPE | Latest phase: {latest:+.0f} us  "
-                       f"Mean: {mean_ph:+.0f} us  Sigma: {std_ph:.0f} us  "
-                       f"({len(phase_measurements)} captures)")
-            else:
-                eprint(f"\n SCOPE | No phase measurements yet")
+                    eprint(f"\n PHASE | No measurements yet "
+                           f"(no-edge: {phase_measurer.no_edge_count}, "
+                           f"errors: {phase_measurer.errors})")
 
             eprint(f"\n [{elapsed:.0f}s / {args.duration}s]  "
                    f"GM: {gm_capture.line_count} lines  "
@@ -503,6 +462,16 @@ def main():
     # Stop captures
     gm_capture.stop()
     rx_capture.stop()
+    if phase_measurer:
+        phase_measurer.stop()
+
+    # Write any remaining phase data
+    if phase_measurer:
+        meas, mean_ns, sigma_ns, min_ns, max_ns = phase_measurer.get_stats()
+        if len(meas) > last_phase_write:
+            for el, ph in meas[last_phase_write:]:
+                phase_file.write(f"{el:.1f},{ph:.0f}\n")
+            phase_file.flush()
 
     # Final dashboard
     final_dashboard = harness.dashboard()
@@ -510,29 +479,39 @@ def main():
 
     # Phase summary
     phase_summary = ""
-    if phase_measurements:
-        import math
-        mean_ph = sum(phase_measurements) / len(phase_measurements)
-        if len(phase_measurements) > 1:
-            variance = sum((p - mean_ph)**2 for p in phase_measurements) / (
-                len(phase_measurements) - 1)
-            std_ph = math.sqrt(variance)
-        else:
-            std_ph = 0.0
-        min_ph = min(phase_measurements)
-        max_ph = max(phase_measurements)
-        phase_summary = (
-            f"\n1PPS Phase (from scope):\n"
-            f"  Measurements: {len(phase_measurements)}\n"
-            f"  Mean:  {mean_ph:+.0f} us\n"
-            f"  Sigma: {std_ph:.0f} us\n"
-            f"  Min:   {min_ph:+.0f} us\n"
-            f"  Max:   {max_ph:+.0f} us\n"
-            f"  Drift: {(phase_measurements[-1] - phase_measurements[0]):.0f} us "
-            f"over {args.duration}s"
-            if len(phase_measurements) > 1 else ""
-        )
-        eprint(phase_summary)
+    if phase_measurer:
+        meas, mean_ns, sigma_ns, min_ns, max_ns = phase_measurer.get_stats()
+        n = len(meas)
+        if n > 0:
+            phases_ns = [m[1] for m in meas]
+
+            # Compute drift via linear regression
+            drift_str = ""
+            if n > 10:
+                import numpy as np
+                ts = np.array([m[0] for m in meas])
+                ps = np.array(phases_ns)
+                # Linear fit: phase = a*t + b
+                coeffs = np.polyfit(ts, ps, 1)
+                drift_ns_per_s = coeffs[0]
+                drift_str = f"  Drift: {drift_ns_per_s:+.1f} ns/s = {drift_ns_per_s/1000:+.3f} us/s"
+
+            phase_summary = (
+                f"\n1PPS Phase (from scope waveform, {parse_sara.__module__} @ "
+                f"{phase_measurer.sample_rate/1e6:.0f} MSa/s):\n"
+                f"  Measurements: {n}\n"
+                f"  Mean:  {mean_ns:+.0f} ns = {mean_ns/1000:+.1f} us\n"
+                f"  Sigma: {sigma_ns:.0f} ns = {sigma_ns/1000:.1f} us\n"
+                f"  Min:   {min_ns:+.0f} ns = {min_ns/1000:+.1f} us\n"
+                f"  Max:   {max_ns:+.0f} ns = {max_ns/1000:+.1f} us\n"
+                f"  P-P:   {max_ns-min_ns:.0f} ns = {(max_ns-min_ns)/1000:.1f} us"
+            )
+            if drift_str:
+                phase_summary += f"\n{drift_str}"
+            if phase_measurer.no_edge_count > 0:
+                phase_summary += f"\n  No-edge: {phase_measurer.no_edge_count}"
+
+            eprint(phase_summary)
 
     # Save summary
     summary_path = os.path.join(run_dir, 'summary.txt')
@@ -543,8 +522,11 @@ def main():
         f.write(f"RX port: {rx_port}\n")
         f.write(f"GM lines: {gm_capture.line_count}\n")
         f.write(f"RX lines: {rx_capture.line_count}\n")
-        f.write(f"Scope captures: {scope_count}\n")
-        f.write(f"Scope time base: {args.time_div} us/div\n")
+        if phase_measurer:
+            f.write(f"Phase measurements: {len(phase_measurer.measurements)}\n")
+            f.write(f"Phase interval: {args.phase_interval}s\n")
+            if phase_measurer.sample_rate:
+                f.write(f"Scope sample rate: {phase_measurer.sample_rate/1e6:.0f} MSa/s\n")
         f.write(f"\n{final_dashboard}\n")
         if phase_summary:
             f.write(f"\n{phase_summary}\n")
@@ -553,15 +535,14 @@ def main():
     gm_raw.close()
     rx_raw.close()
     csv_out.close()
-    phase_csv.close()
+    phase_file.close()
 
     eprint(f"\nResults saved to: {run_dir}")
     eprint(f"  summary.txt   — Dashboard, verdicts, phase summary")
     eprint(f"  rx_raw.csv    — Raw RX serial ({rx_capture.line_count} lines)")
     eprint(f"  gm_raw.log    — Raw GM serial ({gm_capture.line_count} lines)")
     eprint(f"  capture.csv   — Parsed RX data")
-    eprint(f"  phase.csv     — Phase measurements from scope")
-    eprint(f"  scope_*.bmp   — {scope_count} scope screenshots")
+    eprint(f"  phase.csv     — Phase measurements ({last_phase_write} points)")
 
 
 if __name__ == '__main__':

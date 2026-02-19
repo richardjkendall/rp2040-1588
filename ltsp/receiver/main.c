@@ -35,7 +35,6 @@
 
 /* Clock discipline */
 #include "ltsp_clock.h"
-#include "pps_scheduler.h"
 
 /* PIO programs (counter + INTn timestamp + 1PPS) */
 #include "counter_simple.pio.h"
@@ -100,6 +99,20 @@ static uint32_t drift_sample_count = 0;
 // Clock discipline
 static ltsp_clock_state_t clock_state;
 static bool clock_initialized = false;  // One-shot: set initial clock at convergence
+
+// PPS anchor: Core 1 → Core 0, PIO-domain 1PPS scheduling.
+// Updated every packet. Core 0 derives GPS time from
+// the PIO counter directly, avoiding time_us_64() interpolation jitter.
+static volatile int64_t  pps_anchor_clock_ns = 0;     // GPS time at anchor
+static volatile uint32_t pps_anchor_counter = 0;       // PIO counter at packet RX
+static volatile double   pps_anchor_scale_factor = 1.0;
+static volatile bool     pps_anchor_valid = false;
+
+// Filtered PPS anchor: exponential filter on gps_now to reject network jitter.
+// The anchor is updated every packet but filtered to smooth out noise.
+#define PPS_ANCHOR_ALPHA 0.05
+static int64_t pps_filtered_clock_ns = 0;
+static bool pps_filter_initialized = false;
 
 // Stats
 static uint32_t pdu_count = 0;
@@ -192,7 +205,8 @@ static uint32_t ip_str_to_u32(const char *ip_str) {
  * Process a received LTSP PDU.
  * Handles deferred timestamp model, drift regression, clock discipline, and CSV output.
  */
-static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_rx) {
+static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_rx,
+                             uint64_t rx_time_us) {
     ltsp_pdu_t pdu;
     if (!ltsp_pdu_unpack(pdu_payload, &pdu)) {
         printf("ERR: PDU unpack failed\n");
@@ -278,10 +292,28 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
                 clock_initialized = true;
                 clock_at_this_rx = (int64_t)get_ltsp_time_ns();
             } else {
-                // Re-anchor clock to PIO-derived GPS time every packet.
-                // Eliminates drift from time_us_64() free-running.
-                ltsp_clock_reanchor(&clock_state, gps_now);
+                // Update clock_state for CSV/monitoring (uses time_us_64)
+                ltsp_clock_advance(&clock_state);
             }
+
+            // PPS anchor: filter gps_now to reject network jitter,
+            // then pair with hw_counter_at_rx.
+            // Both are PIO-derived, so no cross-timebase drift.
+            if (!pps_filter_initialized) {
+                pps_filtered_clock_ns = gps_now;
+                pps_filter_initialized = true;
+            } else {
+                // Predict where clock should be from previous anchor + PIO elapsed
+                int64_t predicted = pps_filtered_clock_ns +
+                    (int64_t)(elapsed_pio_ns * clock_state.scale_factor);
+                // Blend: alpha * measurement + (1-alpha) * predicted
+                int64_t correction = (int64_t)((gps_now - predicted) * PPS_ANCHOR_ALPHA);
+                pps_filtered_clock_ns = predicted + correction;
+            }
+            pps_anchor_counter = hw_counter_at_rx;
+            pps_anchor_clock_ns = pps_filtered_clock_ns;
+            pps_anchor_scale_factor = clock_state.scale_factor;
+            pps_anchor_valid = true;
 
             // Clock error for monitoring: apparent one-way delay
             // Should be ~constant + jitter if frequency tracks correctly
@@ -389,8 +421,9 @@ void core1_network_entry(void) {
         // Check for received frames
         uint16_t rx_len;
         if (w5500_recv_frame(rx_buffer, sizeof(rx_buffer), &rx_len)) {
-            // Capture SW counter immediately after read
+            // Capture SW counter and system time immediately after read
             uint32_t sw_counter = read_counter();
+            uint64_t rx_us = time_us_64();
 
             // Try HW timestamp first
             uint32_t hw_counter;
@@ -404,7 +437,7 @@ void core1_network_entry(void) {
             // Check if LTSP frame (EtherType 0x88B5)
             const uint8_t *pdu_payload = ltsp_frame_check(rx_buffer, rx_len);
             if (pdu_payload) {
-                process_ltsp_pdu(pdu_payload, rx_counter);
+                process_ltsp_pdu(pdu_payload, rx_counter, rx_us);
             } else {
                 // Handle ARP/ICMP
                 udp_packet_t udp;
@@ -463,18 +496,12 @@ int main() {
     ltsp_clock_init(&clock_state);
     printf("[Core 0] LTSP modules initialized\n");
 
-    // Initialize 1PPS scheduler
-    pps_scheduler_t pps_sched = {
-        .pio = RX_PIO,
-        .sm = PPS_SM,
-        .pin = PPS_OUTPUT_PIN,
-        .get_time_ns = get_ltsp_time_ns,
-        .get_scale_factor = ltsp_clock_get_scale_factor,
-    };
-    if (!pps_scheduler_init(&pps_sched)) {
-        printf("[Core 0] WARNING: 1PPS scheduler init failed\n");
+    // Initialize 1PPS PIO program (scheduling is now PIO-domain, inline below)
+    {
+        uint pps_offset = pio_add_program(RX_PIO, &scheduled_1pps_program);
+        scheduled_1pps_program_init(RX_PIO, PPS_SM, pps_offset, PPS_OUTPUT_PIN);
     }
-    printf("[Core 0] 1PPS output on GPIO%d\n", PPS_OUTPUT_PIN);
+    printf("[Core 0] 1PPS output on GPIO%d (PIO-domain scheduling)\n", PPS_OUTPUT_PIN);
 
     // Signal Core 1
     core0_ready = true;
@@ -484,8 +511,14 @@ int main() {
 
     printf("[Core 0] Entering FIFO drain + 1PPS loop...\n\n");
 
+    // PIO-domain 1PPS scheduling state
     bool pps_enabled = false;
     uint64_t last_pps_schedule_us = 0;
+    uint32_t pps_count = 0;
+
+    // Trim for instructions between second counter read and PIO FIFO load.
+    // ~10 PIO ticks ≈ 120 ns — very deterministic.
+    #define PIO_LOAD_TRIM_TICKS 10
 
     // Core 0 loop: drain HW timestamp FIFO + schedule 1PPS
     while (true) {
@@ -506,17 +539,56 @@ int main() {
             printf("# 1PPS: Disabled (clock invalid)\n");
         }
 
-        // Schedule 1PPS near second boundary
-        if (pps_enabled) {
-            uint64_t ltsp_time = get_ltsp_time_ns();
-            if (ltsp_time > 0) {
-                uint64_t ns_in_second = ltsp_time % 1000000000ULL;
-                uint64_t now_us = time_us_64();
+        // PIO-domain 1PPS scheduling.
+        // Derives GPS time from the PIO counter + anchor (no time_us_64).
+        // Self-calibrates computation delay by bracketing with counter reads.
+        if (pps_enabled && pps_anchor_valid) {
+            // Snapshot anchor (Core 1 may update between reads)
+            int64_t  anchor_ns = pps_anchor_clock_ns;
+            uint32_t anchor_ctr = pps_anchor_counter;
+            double   anchor_sf = pps_anchor_scale_factor;
 
-                if (ns_in_second > 900000000ULL &&
-                    (now_us - last_pps_schedule_us >= 800000)) {
-                    pps_scheduler_schedule_next(&pps_sched);
-                    last_pps_schedule_us = now_us;
+            // Read PIO counter (counts down, 83.33 MHz)
+            uint32_t counter_now = read_counter();
+
+            // Elapsed PIO ticks since anchor (unsigned subtraction handles wrap)
+            uint32_t elapsed_ticks = anchor_ctr - counter_now;
+
+            // GPS time now, derived entirely from PIO domain
+            double elapsed_gps_ns = (double)elapsed_ticks * 12.0 * anchor_sf;
+            int64_t gps_now = anchor_ns + (int64_t)elapsed_gps_ns;
+
+            // Check if we're in the scheduling window (last 100ms of second)
+            uint64_t ns_in_second = (uint64_t)gps_now % 1000000000ULL;
+            uint64_t now_us = time_us_64();
+
+            if (ns_in_second > 900000000ULL &&
+                (now_us - last_pps_schedule_us >= 800000)) {
+
+                // Remaining GPS ns to next second boundary
+                uint64_t remaining_gps_ns = 1000000000ULL - ns_in_second;
+
+                // Convert to PIO ticks
+                double remaining_ticks = (double)remaining_gps_ns /
+                    (12.0 * anchor_sf);
+
+                // Self-calibrate: measure ticks consumed by computation
+                uint32_t counter_after = read_counter();
+                uint32_t comp_ticks = counter_now - counter_after;
+
+                uint32_t ticks = (uint32_t)(remaining_ticks + 0.5)
+                    - comp_ticks - PIO_LOAD_TRIM_TICKS;
+
+                pio_sm_put_blocking(RX_PIO, PPS_SM, ticks);
+                last_pps_schedule_us = now_us;
+                pps_count++;
+
+                if (pps_count <= 3) {
+                    printf("# 1PPS #%lu: %lu ticks (%.3f ms, sf=%.9f)\n",
+                           (unsigned long)pps_count,
+                           (unsigned long)ticks,
+                           (double)ticks * 12.0 / 1e6,
+                           anchor_sf);
                 }
             }
         }

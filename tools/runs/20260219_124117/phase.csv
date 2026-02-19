@@ -1,0 +1,20 @@
+# elapsed_s,phase_us,yellow_edge_px,pink_edge_px,file
+30.0,38.6,312,493,scope_0030s.bmp
+60.4,0.0,312,312,scope_0060s.bmp
+90.7,14.9,312,382,scope_0090s.bmp
+121.0,-5.1,312,288,scope_0120s.bmp
+151.3,23.7,312,423,scope_0151s.bmp
+181.6,,,, scope_0181s.bmp
+211.9,12.0,312,368,scope_0211s.bmp
+242.3,9.2,312,355,scope_0242s.bmp
+272.6,6.8,312,344,scope_0272s.bmp
+302.9,23.3,312,421,scope_0302s.bmp
+333.4,20.5,312,408,scope_0333s.bmp
+363.8,3.2,312,327,scope_0363s.bmp
+394.1,,,, scope_0394s.bmp
+424.4,3.4,312,328,scope_0424s.bmp
+454.7,10.7,312,362,scope_0454s.bmp
+485.1,23.9,312,424,scope_0485s.bmp
+515.4,,,, scope_0515s.bmp
+545.7,13.4,312,375,scope_0545s.bmp
+576.0,16.6,312,390,scope_0576s.bmp
