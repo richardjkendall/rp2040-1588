@@ -100,6 +100,8 @@ static uint32_t drift_sample_count = 0;
 static ltsp_clock_state_t clock_state;
 static bool clock_initialized = false;  // One-shot: set initial clock at convergence
 
+
+
 // PPS anchor: Core 1 → Core 0, PIO-domain 1PPS scheduling.
 // Updated every packet. Core 0 derives GPS time from
 // the PIO counter directly, avoiding time_us_64() interpolation jitter.
@@ -291,29 +293,31 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
                 ltsp_clock_set_initial(&clock_state, gps_now, drift_ns_per_s_now);
                 clock_initialized = true;
                 clock_at_this_rx = (int64_t)get_ltsp_time_ns();
+
+                // Seed PPS filter
+                pps_filtered_clock_ns = gps_now;
+                pps_filter_initialized = true;
+                pps_anchor_counter = hw_counter_at_rx;
+                pps_anchor_clock_ns = pps_filtered_clock_ns;
+                pps_anchor_scale_factor = clock_state.scale_factor;
+                pps_anchor_valid = true;
             } else {
                 // Update clock_state for CSV/monitoring (uses time_us_64)
                 ltsp_clock_advance(&clock_state);
-            }
 
-            // PPS anchor: filter gps_now to reject network jitter,
-            // then pair with hw_counter_at_rx.
-            // Both are PIO-derived, so no cross-timebase drift.
-            if (!pps_filter_initialized) {
-                pps_filtered_clock_ns = gps_now;
-                pps_filter_initialized = true;
-            } else {
-                // Predict where clock should be from previous anchor + PIO elapsed
+                // PPS anchor: filter gps_now to reject network jitter,
+                // then pair with hw_counter_at_rx.
+                // Both are PIO-derived, so no cross-timebase drift.
                 int64_t predicted = pps_filtered_clock_ns +
                     (int64_t)(elapsed_pio_ns * clock_state.scale_factor);
-                // Blend: alpha * measurement + (1-alpha) * predicted
                 int64_t correction = (int64_t)((gps_now - predicted) * PPS_ANCHOR_ALPHA);
                 pps_filtered_clock_ns = predicted + correction;
+
+                pps_anchor_counter = hw_counter_at_rx;
+                pps_anchor_clock_ns = pps_filtered_clock_ns;
+                pps_anchor_scale_factor = clock_state.scale_factor;
+                pps_anchor_valid = true;
             }
-            pps_anchor_counter = hw_counter_at_rx;
-            pps_anchor_clock_ns = pps_filtered_clock_ns;
-            pps_anchor_scale_factor = clock_state.scale_factor;
-            pps_anchor_valid = true;
 
             // Clock error for monitoring: apparent one-way delay
             // Should be ~constant + jitter if frequency tracks correctly
