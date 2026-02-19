@@ -1,0 +1,42 @@
+LTSP Integration Test — 20260219_111231
+Duration: 601s
+GM port: /dev/cu.usbmodem1101
+RX port: /dev/cu.usbmodem21101
+GM lines: 120
+RX lines: 620
+Scope captures: 19
+Scope time base: 250.0 us/div
+
+========================================================================
+ LTSP Test Harness v0.4  |  601s elapsed
+========================================================================
+ GM  | GPS Lock: YES  PPS: 50341  Crystal: +30828 ns  Interp: +183 ns
+      | Regression: a1=+0.059 ppb  sigma=9.8 ns
+      | TX latency: mean=+251231 ns std=1346 ns min=+247620 ns max=+254232 ns n=60
+------------------------------------------------------------------------
+ RX  | Packets: 602  Seq gaps: 0  Errors: GM=0 RX=0  State: LOCKED
+      | Drift: +32212.7 ns/s = +32.2 ppm  sigma=32510 ns
+------------------------------------------------------------------------
+ JIT | Detrended: mean=-130 ns std=31045 ns min=-74653 ns max=+75253 ns n=553
+      | Offset:    mean=+70527 ns std=31386 ns min=+0 ns max=+149656 ns n=553
+------------------------------------------------------------------------
+ CLK | One-way delay: mean=-635851 ns std=50171 ns min=-729625 ns max=+60291 ns n=552
+      | Sigma: 50.2 us  Mean: -635.9 us (expected ~constant)
+========================================================================
+ PASS: Jitter sigma = 31.0 us
+ PASS: Zero packet loss
+ PASS: GM regression sigma = 9.8 ns
+ PASS: RX crystal = 32.2 ppm
+ PASS: Drift sigma = 32510 ns
+ PASS: One-way delay sigma = 50.2 us (stable)
+ PASS: Sync state = LOCKED
+========================================================================
+
+
+1PPS Phase (from scope):
+  Measurements: 18
+  Mean:  +708 us
+  Sigma: 16 us
+  Min:   +683 us
+  Max:   +731 us
+  Drift: -11 us over 600s

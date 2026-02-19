@@ -94,11 +94,31 @@ void ltsp_clock_advance(ltsp_clock_state_t *st) {
     g_clock_update_us = st->clock_update_us;
 }
 
+/**
+ * Re-anchor clock toward a GPS-derived time estimate.
+ *
+ * Blends the new GPS measurement with the predicted clock value
+ * (what advance() would give) to filter out network jitter.
+ *
+ * alpha=0.0: pure free-run (no correction)
+ * alpha=1.0: hard re-anchor (no filtering, maximum jitter)
+ * alpha=0.1: 10-sample time constant, ~10x jitter reduction
+ */
+#define REANCHOR_ALPHA 0.1
+
 void ltsp_clock_reanchor(ltsp_clock_state_t *st, int64_t gps_time_ns) {
     if (!st->clock_valid) return;
 
     uint64_t now_us = time_us_64();
-    st->clock_ns = gps_time_ns;
+    uint64_t elapsed_us = now_us - st->clock_update_us;
+
+    /* Predicted clock: what advance() would give */
+    int64_t predicted_ns = st->clock_ns +
+        (int64_t)(elapsed_us * 1000.0 * st->scale_factor);
+
+    /* Blend: filtered = alpha * measurement + (1-alpha) * predicted */
+    int64_t correction = (int64_t)((gps_time_ns - predicted_ns) * REANCHOR_ALPHA);
+    st->clock_ns = predicted_ns + correction;
     st->clock_update_us = now_us;
 
     /* Publish */
