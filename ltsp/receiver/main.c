@@ -113,6 +113,8 @@ static volatile bool     pps_anchor_valid = false;
 // Filtered PPS anchor: exponential filter on gps_now to reject network jitter.
 // The anchor is updated every packet but filtered to smooth out noise.
 #define PPS_ANCHOR_ALPHA 0.05
+#define ASYMMETRY_CORRECTION_NS 90000  // Empirical: compensates GM TX processing asymmetry
+#define PIO_LOAD_TRIM_TICKS 10         // PIO instruction overhead for pulse scheduling
 static int64_t pps_filtered_clock_ns = 0;
 static bool pps_filter_initialized = false;
 
@@ -126,7 +128,7 @@ static uint32_t deferred_skip_count = 0;
 /**
  * Read current PIO counter (atomic snapshot)
  */
-static uint32_t read_counter(void) {
+static uint32_t __time_critical_func(read_counter)(void) {
     pio_sm_set_enabled(RX_PIO, COUNTER_SM, false);
     pio_sm_exec(RX_PIO, COUNTER_SM, pio_encode_mov(pio_isr, pio_x));
     pio_sm_exec(RX_PIO, COUNTER_SM, pio_encode_push(false, false));
@@ -139,7 +141,7 @@ static uint32_t read_counter(void) {
  * Drain INTn HW timestamp FIFO into circular buffer.
  * Called frequently from Core 0.
  */
-static void drain_hw_timestamp_fifo(void) {
+static void __time_critical_func(drain_hw_timestamp_fifo)(void) {
     while (!pio_sm_is_rx_fifo_empty(RX_PIO, INT_TIMESTAMP_SM)) {
         // Discard marker from FIFO
         (void)pio_sm_get(RX_PIO, INT_TIMESTAMP_SM);
@@ -286,7 +288,7 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
             // Compute GPS time at this RX moment from known quantities:
             // GPS_TX_prev (exact) + PIO_elapsed (crystal) * scale_factor (correction)
             int64_t elapsed_pio_ns = t_rx_ns - prev_rx.t_rx_ns;
-            int64_t gps_now = pdu.prev_tx_timestamp +
+            int64_t gps_now = (pdu.prev_tx_timestamp - ASYMMETRY_CORRECTION_NS) +
                 (int64_t)(elapsed_pio_ns * clock_state.scale_factor);
 
             if (!clock_initialized) {
@@ -521,8 +523,7 @@ int main() {
     uint32_t pps_count = 0;
 
     // Trim for instructions between second counter read and PIO FIFO load.
-    // ~10 PIO ticks ≈ 120 ns — very deterministic.
-    #define PIO_LOAD_TRIM_TICKS 10
+    // ~10 PIO ticks ≈ 120 ns — very deterministic. (defined at top of file)
 
     // Core 0 loop: drain HW timestamp FIFO + schedule 1PPS
     while (true) {
