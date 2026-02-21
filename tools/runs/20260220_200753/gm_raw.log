@@ -1,0 +1,361 @@
+[LTSP-GM] PDU #168240 seq=37167 TX_TS=HW (lat=+252816 ns) a1=0.083 ppb sigma=14.2 ns
+[LTSP-GM] TX: 168248 PDUs | HW_TS: 168247/168248 success
+[LTSP-GM] Regression: a0=2494.7 ticks a1=0.181 ppb sigma=15.8 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168299 crystal_err=+29964 ns interp_err=+59 ns
+[LTSP-GM] PDU #168250 seq=37177 TX_TS=HW (lat=+253800 ns) a1=0.187 ppb sigma=15.8 ns
+[LTSP-GM] PDU #168260 seq=37187 TX_TS=HW (lat=+254436 ns) a1=0.214 ppb sigma=16.0 ns
+[LTSP-GM] PDU #168270 seq=37197 TX_TS=HW (lat=+251040 ns) a1=0.218 ppb sigma=15.9 ns
+[LTSP-GM] TX: 168278 PDUs | HW_TS: 168277/168278 success
+[LTSP-GM] Regression: a0=2494.6 ticks a1=0.158 ppb sigma=16.7 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168329 crystal_err=+29928 ns interp_err=+71 ns
+[LTSP-GM] PDU #168280 seq=37207 TX_TS=HW (lat=+252408 ns) a1=0.121 ppb sigma=16.8 ns
+[LTSP-GM] PDU #168290 seq=37217 TX_TS=HW (lat=+253596 ns) a1=-0.195 ppb sigma=15.2 ns
+[LTSP-GM] PDU #168300 seq=37227 TX_TS=HW (lat=+253212 ns) a1=-0.273 ppb sigma=13.1 ns
+[LTSP-GM] TX: 168308 PDUs | HW_TS: 168307/168308 success
+[LTSP-GM] Regression: a0=2495.3 ticks a1=-0.284 ppb sigma=11.9 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168359 crystal_err=+29916 ns interp_err=-928 ns
+[LTSP-GM] PDU #168310 seq=37237 TX_TS=HW (lat=+253224 ns) a1=-0.281 ppb sigma=11.7 ns
+[LTSP-GM] PDU #168320 seq=37247 TX_TS=HW (lat=+249396 ns) a1=-0.226 ppb sigma=11.3 ns
+[LTSP-GM] PDU #168330 seq=37257 TX_TS=HW (lat=+252228 ns) a1=-0.088 ppb sigma=11.8 ns
+[LTSP-GM] TX: 168338 PDUs | HW_TS: 168337/168338 success
+[LTSP-GM] Regression: a0=2493.1 ticks a1=-0.008 ppb sigma=10.8 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168389 crystal_err=+29904 ns interp_err=+95 ns
+[LTSP-GM] PDU #168340 seq=37267 TX_TS=HW (lat=+250224 ns) a1=-0.025 ppb sigma=10.5 ns
+[LTSP-GM] PDU #168350 seq=37277 TX_TS=HW (lat=+251400 ns) a1=-0.053 ppb sigma=8.9 ns
+[LTSP-GM] PDU #168360 seq=37287 TX_TS=HW (lat=+251832 ns) a1=-0.054 ppb sigma=8.1 ns
+[LTSP-GM] TX: 168368 PDUs | HW_TS: 168367/168368 success
+[LTSP-GM] Regression: a0=2492.6 ticks a1=-0.018 ppb sigma=7.8 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168419 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #168370 seq=37297 TX_TS=HW (lat=+252000 ns) a1=-0.015 ppb sigma=7.8 ns
+[LTSP-GM] PDU #168380 seq=37307 TX_TS=HW (lat=+251196 ns) a1=-0.002 ppb sigma=7.2 ns
+[LTSP-GM] PDU #168390 seq=37317 TX_TS=HW (lat=+250008 ns) a1=-0.063 ppb sigma=7.3 ns
+[LTSP-GM] TX: 168398 PDUs | HW_TS: 168397/168398 success
+[LTSP-GM] Regression: a0=2492.4 ticks a1=-0.077 ppb sigma=7.2 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168449 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #168400 seq=37327 TX_TS=HW (lat=+255588 ns) a1=-0.071 ppb sigma=7.3 ns
+[LTSP-GM] PDU #168410 seq=37337 TX_TS=HW (lat=+252408 ns) a1=-0.042 ppb sigma=8.0 ns
+[LTSP-GM] PDU #168420 seq=37347 TX_TS=HW (lat=+249240 ns) a1=-0.054 ppb sigma=8.5 ns
+[LTSP-GM] TX: 168428 PDUs | HW_TS: 168427/168428 success
+[LTSP-GM] Regression: a0=2492.7 ticks a1=-0.029 ppb sigma=9.2 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168479 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #168430 seq=37357 TX_TS=HW (lat=+255204 ns) a1=-0.028 ppb sigma=9.5 ns
+[LTSP-GM] PDU #168440 seq=37367 TX_TS=HW (lat=+251820 ns) a1=0.005 ppb sigma=9.7 ns
+[LTSP-GM] PDU #168450 seq=37377 TX_TS=HW (lat=+250836 ns) a1=0.022 ppb sigma=9.1 ns
+[LTSP-GM] TX: 168458 PDUs | HW_TS: 168457/168458 success
+[LTSP-GM] Regression: a0=2493.0 ticks a1=0.004 ppb sigma=7.9 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168509 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #168460 seq=37387 TX_TS=HW (lat=+253812 ns) a1=-0.000 ppb sigma=8.0 ns
+[LTSP-GM] PDU #168470 seq=37397 TX_TS=HW (lat=+249624 ns) a1=-0.008 ppb sigma=7.9 ns
+[LTSP-GM] PDU #168480 seq=37407 TX_TS=HW (lat=+252000 ns) a1=-0.027 ppb sigma=9.2 ns
+[LTSP-GM] TX: 168488 PDUs | HW_TS: 168487/168488 success
+[LTSP-GM] Regression: a0=2492.9 ticks a1=-0.048 ppb sigma=9.6 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168539 crystal_err=+29904 ns interp_err=-892 ns
+[LTSP-GM] PDU #168490 seq=37417 TX_TS=HW (lat=+254424 ns) a1=-0.050 ppb sigma=9.7 ns
+[LTSP-GM] PDU #168500 seq=37427 TX_TS=HW (lat=+253428 ns) a1=-0.057 ppb sigma=9.1 ns
+[LTSP-GM] PDU #168510 seq=37437 TX_TS=HW (lat=+251448 ns) a1=-0.055 ppb sigma=8.6 ns
+[LTSP-GM] TX: 168518 PDUs | HW_TS: 168517/168518 success
+[LTSP-GM] Regression: a0=2492.3 ticks a1=-0.035 ppb sigma=8.3 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168569 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #168520 seq=37447 TX_TS=HW (lat=+253032 ns) a1=-0.037 ppb sigma=8.2 ns
+[LTSP-GM] PDU #168530 seq=37457 TX_TS=HW (lat=+248628 ns) a1=0.001 ppb sigma=8.8 ns
+[LTSP-GM] PDU #168540 seq=37467 TX_TS=HW (lat=+251640 ns) a1=-0.043 ppb sigma=8.2 ns
+[LTSP-GM] TX: 168548 PDUs | HW_TS: 168547/168548 success
+[LTSP-GM] Regression: a0=2492.5 ticks a1=0.017 ppb sigma=8.2 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168599 crystal_err=+29904 ns interp_err=+71 ns
+[LTSP-GM] PDU #168550 seq=37477 TX_TS=HW (lat=+251784 ns) a1=0.022 ppb sigma=7.8 ns
+[LTSP-GM] PDU #168560 seq=37487 TX_TS=HW (lat=+250032 ns) a1=0.022 ppb sigma=8.0 ns
+[LTSP-GM] PDU #168570 seq=37497 TX_TS=HW (lat=+252204 ns) a1=0.016 ppb sigma=7.4 ns
+[LTSP-GM] TX: 168578 PDUs | HW_TS: 168577/168578 success
+[LTSP-GM] Regression: a0=2492.8 ticks a1=-0.002 ppb sigma=7.4 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168629 crystal_err=+29904 ns interp_err=+83 ns
+[LTSP-GM] PDU #168580 seq=37507 TX_TS=HW (lat=+257604 ns) a1=-0.009 ppb sigma=7.3 ns
+[LTSP-GM] PDU #168590 seq=37517 TX_TS=HW (lat=+251808 ns) a1=0.006 ppb sigma=7.1 ns
+[LTSP-GM] PDU #168600 seq=37527 TX_TS=HW (lat=+251232 ns) a1=-0.069 ppb sigma=7.1 ns
+[LTSP-GM] TX: 168608 PDUs | HW_TS: 168607/168608 success
+[LTSP-GM] Regression: a0=2492.7 ticks a1=-0.067 ppb sigma=6.9 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168659 crystal_err=+29904 ns interp_err=+95 ns
+[LTSP-GM] PDU #168610 seq=37537 TX_TS=HW (lat=+254424 ns) a1=-0.064 ppb sigma=6.9 ns
+[LTSP-GM] PDU #168620 seq=37547 TX_TS=HW (lat=+251232 ns) a1=-0.084 ppb sigma=7.2 ns
+[LTSP-GM] PDU #168630 seq=37557 TX_TS=HW (lat=+252204 ns) a1=-0.060 ppb sigma=7.2 ns
+[LTSP-GM] TX: 168638 PDUs | HW_TS: 168637/168638 success
+[LTSP-GM] Regression: a0=2492.6 ticks a1=-0.039 ppb sigma=7.7 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168689 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #168640 seq=37567 TX_TS=HW (lat=+248808 ns) a1=-0.020 ppb sigma=7.8 ns
+[LTSP-GM] PDU #168650 seq=37577 TX_TS=HW (lat=+250200 ns) a1=0.017 ppb sigma=8.1 ns
+[LTSP-GM] PDU #168660 seq=37587 TX_TS=HW (lat=+249624 ns) a1=-0.002 ppb sigma=8.1 ns
+[LTSP-GM] TX: 168668 PDUs | HW_TS: 168667/168668 success
+[LTSP-GM] Regression: a0=2492.5 ticks a1=0.010 ppb sigma=8.5 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168719 crystal_err=+29916 ns interp_err=+71 ns
+[LTSP-GM] PDU #168670 seq=37597 TX_TS=HW (lat=+249036 ns) a1=0.016 ppb sigma=8.7 ns
+[LTSP-GM] PDU #168680 seq=37607 TX_TS=HW (lat=+248616 ns) a1=-0.014 ppb sigma=8.5 ns
+[LTSP-GM] PDU #168690 seq=37617 TX_TS=HW (lat=+250392 ns) a1=-0.023 ppb sigma=8.9 ns
+[LTSP-GM] TX: 168698 PDUs | HW_TS: 168697/168698 success
+[LTSP-GM] Regression: a0=2492.5 ticks a1=-0.015 ppb sigma=8.8 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168749 crystal_err=+29904 ns interp_err=+83 ns
+[LTSP-GM] PDU #168700 seq=37627 TX_TS=HW (lat=+254640 ns) a1=-0.009 ppb sigma=8.8 ns
+[LTSP-GM] PDU #168710 seq=37637 TX_TS=HW (lat=+251808 ns) a1=0.052 ppb sigma=9.5 ns
+[LTSP-GM] PDU #168720 seq=37647 TX_TS=HW (lat=+252000 ns) a1=0.051 ppb sigma=9.5 ns
+[LTSP-GM] TX: 168728 PDUs | HW_TS: 168727/168728 success
+[LTSP-GM] Regression: a0=2492.5 ticks a1=0.056 ppb sigma=9.5 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168779 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #168730 seq=37657 TX_TS=HW (lat=+253188 ns) a1=0.065 ppb sigma=9.3 ns
+[LTSP-GM] PDU #168740 seq=37667 TX_TS=HW (lat=+252432 ns) a1=0.108 ppb sigma=9.1 ns
+[LTSP-GM] PDU #168750 seq=37677 TX_TS=HW (lat=+252012 ns) a1=0.014 ppb sigma=9.2 ns
+[LTSP-GM] TX: 168758 PDUs | HW_TS: 168757/168758 success
+[LTSP-GM] Regression: a0=2492.7 ticks a1=-0.038 ppb sigma=9.5 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168809 crystal_err=+29892 ns interp_err=+83 ns
+[LTSP-GM] PDU #168760 seq=37687 TX_TS=HW (lat=+252840 ns) a1=-0.041 ppb sigma=9.6 ns
+[LTSP-GM] PDU #168770 seq=37697 TX_TS=HW (lat=+248220 ns) a1=-0.080 ppb sigma=9.8 ns
+[LTSP-GM] PDU #168780 seq=37707 TX_TS=HW (lat=+250620 ns) a1=-0.068 ppb sigma=9.6 ns
+[LTSP-GM] TX: 168788 PDUs | HW_TS: 168787/168788 success
+[LTSP-GM] Regression: a0=2492.3 ticks a1=-0.059 ppb sigma=9.9 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168839 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #168790 seq=37717 TX_TS=HW (lat=+253224 ns) a1=-0.061 ppb sigma=9.9 ns
+[LTSP-GM] PDU #168800 seq=37727 TX_TS=HW (lat=+251604 ns) a1=-0.025 ppb sigma=9.2 ns
+[LTSP-GM] PDU #168810 seq=37737 TX_TS=HW (lat=+249036 ns) a1=-0.050 ppb sigma=8.2 ns
+[LTSP-GM] TX: 168818 PDUs | HW_TS: 168817/168818 success
+[LTSP-GM] Regression: a0=2491.7 ticks a1=-0.038 ppb sigma=8.1 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168869 crystal_err=+29904 ns interp_err=+107 ns
+[LTSP-GM] PDU #168820 seq=37747 TX_TS=HW (lat=+255612 ns) a1=-0.036 ppb sigma=8.1 ns
+[LTSP-GM] PDU #168830 seq=37757 TX_TS=HW (lat=+249204 ns) a1=-0.027 ppb sigma=9.5 ns
+[LTSP-GM] PDU #168840 seq=37767 TX_TS=HW (lat=+249396 ns) a1=-0.067 ppb sigma=9.2 ns
+[LTSP-GM] TX: 168848 PDUs | HW_TS: 168847/168848 success
+[LTSP-GM] Regression: a0=2492.5 ticks a1=-0.090 ppb sigma=8.9 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168899 crystal_err=+29892 ns interp_err=+95 ns
+[LTSP-GM] PDU #168850 seq=37777 TX_TS=HW (lat=+255000 ns) a1=-0.105 ppb sigma=8.9 ns
+[LTSP-GM] PDU #168860 seq=37787 TX_TS=HW (lat=+250608 ns) a1=-0.128 ppb sigma=9.1 ns
+[LTSP-GM] PDU #168870 seq=37797 TX_TS=HW (lat=+253200 ns) a1=-0.119 ppb sigma=8.7 ns
+[LTSP-GM] TX: 168878 PDUs | HW_TS: 168877/168878 success
+[LTSP-GM] Regression: a0=2492.2 ticks a1=-0.127 ppb sigma=8.3 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168929 crystal_err=+29904 ns interp_err=-892 ns
+[LTSP-GM] PDU #168880 seq=37807 TX_TS=HW (lat=+253788 ns) a1=-0.130 ppb sigma=8.4 ns
+[LTSP-GM] PDU #168890 seq=37817 TX_TS=HW (lat=+252012 ns) a1=-0.083 ppb sigma=7.2 ns
+[LTSP-GM] PDU #168900 seq=37827 TX_TS=HW (lat=+252228 ns) a1=-0.052 ppb sigma=7.6 ns
+[LTSP-GM] TX: 168908 PDUs | HW_TS: 168907/168908 success
+[LTSP-GM] Regression: a0=2491.8 ticks a1=-0.021 ppb sigma=8.0 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168959 crystal_err=+29916 ns interp_err=-904 ns
+[LTSP-GM] PDU #168910 seq=37837 TX_TS=HW (lat=+255012 ns) a1=-0.017 ppb sigma=8.0 ns
+[LTSP-GM] PDU #168920 seq=37847 TX_TS=HW (lat=+251196 ns) a1=-0.007 ppb sigma=7.5 ns
+[LTSP-GM] PDU #168930 seq=37857 TX_TS=HW (lat=+251640 ns) a1=-0.018 ppb sigma=7.6 ns
+[LTSP-GM] TX: 168938 PDUs | HW_TS: 168937/168938 success
+[LTSP-GM] Regression: a0=2492.2 ticks a1=-0.034 ppb sigma=7.6 ns (valid)
+[Core 0] GPS: Lock=YES PPS=168989 crystal_err=+29904 ns interp_err=-916 ns
+[LTSP-GM] PDU #168940 seq=37867 TX_TS=HW (lat=+255192 ns) a1=-0.043 ppb sigma=7.4 ns
+[LTSP-GM] PDU #168950 seq=37877 TX_TS=HW (lat=+253020 ns) a1=-0.057 ppb sigma=8.0 ns
+[LTSP-GM] PDU #168960 seq=37887 TX_TS=HW (lat=+248616 ns) a1=0.029 ppb sigma=7.7 ns
+[LTSP-GM] TX: 168968 PDUs | HW_TS: 168967/168968 success
+[LTSP-GM] Regression: a0=2492.2 ticks a1=0.007 ppb sigma=8.2 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169019 crystal_err=+29892 ns interp_err=+95 ns
+[LTSP-GM] PDU #168970 seq=37897 TX_TS=HW (lat=+252828 ns) a1=0.005 ppb sigma=8.2 ns
+[LTSP-GM] PDU #168980 seq=37907 TX_TS=HW (lat=+253812 ns) a1=-0.039 ppb sigma=9.7 ns
+[LTSP-GM] PDU #168990 seq=37917 TX_TS=HW (lat=+253032 ns) a1=-0.061 ppb sigma=10.0 ns
+[LTSP-GM] TX: 168998 PDUs | HW_TS: 168997/168998 success
+[LTSP-GM] Regression: a0=2492.1 ticks a1=-0.046 ppb sigma=10.2 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169049 crystal_err=+29892 ns interp_err=+95 ns
+[LTSP-GM] PDU #169000 seq=37927 TX_TS=HW (lat=+258996 ns) a1=-0.040 ppb sigma=10.2 ns
+[LTSP-GM] PDU #169010 seq=37937 TX_TS=HW (lat=+251388 ns) a1=0.115 ppb sigma=9.1 ns
+[LTSP-GM] PDU #169020 seq=37947 TX_TS=HW (lat=+251628 ns) a1=0.100 ppb sigma=9.1 ns
+[LTSP-GM] TX: 169028 PDUs | HW_TS: 169027/169028 success
+[LTSP-GM] Regression: a0=2491.6 ticks a1=0.101 ppb sigma=9.0 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169079 crystal_err=+29892 ns interp_err=+95 ns
+[LTSP-GM] PDU #169030 seq=37957 TX_TS=HW (lat=+255600 ns) a1=0.099 ppb sigma=9.1 ns
+[LTSP-GM] PDU #169040 seq=37967 TX_TS=HW (lat=+250200 ns) a1=0.057 ppb sigma=8.7 ns
+[LTSP-GM] PDU #169050 seq=37977 TX_TS=HW (lat=+253428 ns) a1=0.070 ppb sigma=8.6 ns
+[LTSP-GM] TX: 169058 PDUs | HW_TS: 169057/169058 success
+[LTSP-GM] Regression: a0=2492.2 ticks a1=0.157 ppb sigma=8.0 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169109 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #169060 seq=37987 TX_TS=HW (lat=+254220 ns) a1=0.161 ppb sigma=8.0 ns
+[LTSP-GM] PDU #169070 seq=37997 TX_TS=HW (lat=+249228 ns) a1=0.126 ppb sigma=7.8 ns
+[LTSP-GM] PDU #169080 seq=38007 TX_TS=HW (lat=+250812 ns) a1=0.142 ppb sigma=7.4 ns
+[LTSP-GM] TX: 169088 PDUs | HW_TS: 169087/169088 success
+[LTSP-GM] Regression: a0=2491.6 ticks a1=0.154 ppb sigma=7.1 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169139 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #169090 seq=38017 TX_TS=HW (lat=+251208 ns) a1=0.150 ppb sigma=7.0 ns
+[LTSP-GM] PDU #169100 seq=38027 TX_TS=HW (lat=+248640 ns) a1=0.126 ppb sigma=7.1 ns
+[LTSP-GM] PDU #169110 seq=38037 TX_TS=HW (lat=+250032 ns) a1=-0.009 ppb sigma=6.5 ns
+[LTSP-GM] TX: 169118 PDUs | HW_TS: 169117/169118 success
+[LTSP-GM] Regression: a0=2492.4 ticks a1=-0.016 ppb sigma=6.4 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169169 crystal_err=+29904 ns interp_err=+95 ns
+[LTSP-GM] PDU #169120 seq=38047 TX_TS=HW (lat=+252204 ns) a1=-0.012 ppb sigma=6.5 ns
+[LTSP-GM] PDU #169130 seq=38057 TX_TS=HW (lat=+249648 ns) a1=-0.013 ppb sigma=6.1 ns
+[LTSP-GM] PDU #169140 seq=38067 TX_TS=HW (lat=+250416 ns) a1=-0.004 ppb sigma=6.5 ns
+[LTSP-GM] TX: 169148 PDUs | HW_TS: 169147/169148 success
+[LTSP-GM] Regression: a0=2492.6 ticks a1=-0.011 ppb sigma=6.5 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169199 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #169150 seq=38077 TX_TS=HW (lat=+254028 ns) a1=-0.016 ppb sigma=6.5 ns
+[LTSP-GM] PDU #169160 seq=38087 TX_TS=HW (lat=+252024 ns) a1=-0.035 ppb sigma=7.1 ns
+[LTSP-GM] PDU #169170 seq=38097 TX_TS=HW (lat=+251436 ns) a1=-0.057 ppb sigma=7.1 ns
+[LTSP-GM] TX: 169178 PDUs | HW_TS: 169177/169178 success
+[LTSP-GM] Regression: a0=2492.4 ticks a1=-0.034 ppb sigma=7.3 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169229 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #169180 seq=38107 TX_TS=HW (lat=+258624 ns) a1=-0.034 ppb sigma=7.3 ns
+[LTSP-GM] PDU #169190 seq=38117 TX_TS=HW (lat=+252204 ns) a1=-0.024 ppb sigma=7.4 ns
+[LTSP-GM] PDU #169200 seq=38127 TX_TS=HW (lat=+252804 ns) a1=-0.004 ppb sigma=6.9 ns
+[LTSP-GM] TX: 169208 PDUs | HW_TS: 169207/169208 success
+[LTSP-GM] Regression: a0=2492.2 ticks a1=0.007 ppb sigma=7.3 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169259 crystal_err=+29916 ns interp_err=+107 ns
+[LTSP-GM] PDU #169210 seq=38137 TX_TS=HW (lat=+252192 ns) a1=-0.000 ppb sigma=7.3 ns
+[LTSP-GM] PDU #169220 seq=38147 TX_TS=HW (lat=+250824 ns) a1=-0.038 ppb sigma=6.6 ns
+[LTSP-GM] PDU #169230 seq=38157 TX_TS=HW (lat=+252228 ns) a1=-0.038 ppb sigma=7.1 ns
+[LTSP-GM] TX: 169238 PDUs | HW_TS: 169237/169238 success
+[LTSP-GM] Regression: a0=2492.3 ticks a1=-0.035 ppb sigma=7.4 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169289 crystal_err=+29904 ns interp_err=+95 ns
+[LTSP-GM] PDU #169240 seq=38167 TX_TS=HW (lat=+253404 ns) a1=-0.039 ppb sigma=7.6 ns
+[LTSP-GM] PDU #169250 seq=38177 TX_TS=HW (lat=+248796 ns) a1=-0.020 ppb sigma=7.4 ns
+[LTSP-GM] PDU #169260 seq=38187 TX_TS=HW (lat=+249396 ns) a1=0.009 ppb sigma=8.7 ns
+[LTSP-GM] TX: 169268 PDUs | HW_TS: 169267/169268 success
+[LTSP-GM] Regression: a0=2492.5 ticks a1=0.086 ppb sigma=8.9 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169319 crystal_err=+29928 ns interp_err=+95 ns
+[LTSP-GM] PDU #169270 seq=38197 TX_TS=HW (lat=+255996 ns) a1=0.099 ppb sigma=9.0 ns
+[LTSP-GM] PDU #169280 seq=38207 TX_TS=HW (lat=+251832 ns) a1=0.084 ppb sigma=9.0 ns
+[LTSP-GM] PDU #169290 seq=38217 TX_TS=HW (lat=+249828 ns) a1=0.053 ppb sigma=9.4 ns
+[LTSP-GM] TX: 169298 PDUs | HW_TS: 169297/169298 success
+[LTSP-GM] Regression: a0=2492.5 ticks a1=0.032 ppb sigma=8.9 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169349 crystal_err=+29904 ns interp_err=+83 ns
+[LTSP-GM] PDU #169300 seq=38227 TX_TS=HW (lat=+254388 ns) a1=0.022 ppb sigma=8.6 ns
+[LTSP-GM] PDU #169310 seq=38237 TX_TS=HW (lat=+251208 ns) a1=0.032 ppb sigma=8.8 ns
+[LTSP-GM] PDU #169320 seq=38247 TX_TS=HW (lat=+250236 ns) a1=0.116 ppb sigma=8.2 ns
+[LTSP-GM] TX: 169328 PDUs | HW_TS: 169327/169328 success
+[LTSP-GM] Regression: a0=2492.8 ticks a1=0.137 ppb sigma=7.7 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169379 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #169330 seq=38257 TX_TS=HW (lat=+254388 ns) a1=0.132 ppb sigma=7.7 ns
+[LTSP-GM] PDU #169340 seq=38267 TX_TS=HW (lat=+251604 ns) a1=0.107 ppb sigma=8.6 ns
+[LTSP-GM] PDU #169350 seq=38277 TX_TS=HW (lat=+251796 ns) a1=0.073 ppb sigma=8.2 ns
+[LTSP-GM] TX: 169358 PDUs | HW_TS: 169357/169358 success
+[LTSP-GM] Regression: a0=2492.5 ticks a1=0.077 ppb sigma=8.3 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169409 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #169360 seq=38287 TX_TS=HW (lat=+255600 ns) a1=0.083 ppb sigma=8.2 ns
+[LTSP-GM] PDU #169370 seq=38297 TX_TS=HW (lat=+250800 ns) a1=0.005 ppb sigma=8.4 ns
+[LTSP-GM] PDU #169380 seq=38307 TX_TS=HW (lat=+250620 ns) a1=-0.029 ppb sigma=8.3 ns
+[LTSP-GM] TX: 169388 PDUs | HW_TS: 169387/169388 success
+[LTSP-GM] Regression: a0=2492.5 ticks a1=-0.015 ppb sigma=6.8 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169439 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #169390 seq=38317 TX_TS=HW (lat=+253992 ns) a1=-0.017 ppb sigma=6.8 ns
+[LTSP-GM] PDU #169400 seq=38327 TX_TS=HW (lat=+250824 ns) a1=-0.026 ppb sigma=6.7 ns
+[LTSP-GM] PDU #169410 seq=38337 TX_TS=HW (lat=+249216 ns) a1=-0.026 ppb sigma=7.1 ns
+[LTSP-GM] TX: 169418 PDUs | HW_TS: 169417/169418 success
+[LTSP-GM] Regression: a0=2492.4 ticks a1=0.007 ppb sigma=7.1 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169469 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #169420 seq=38347 TX_TS=HW (lat=+250620 ns) a1=0.014 ppb sigma=7.1 ns
+[LTSP-GM] PDU #169430 seq=38357 TX_TS=HW (lat=+251040 ns) a1=0.008 ppb sigma=7.4 ns
+[LTSP-GM] PDU #169440 seq=38367 TX_TS=HW (lat=+251844 ns) a1=0.029 ppb sigma=7.5 ns
+[LTSP-GM] TX: 169448 PDUs | HW_TS: 169447/169448 success
+[LTSP-GM] Regression: a0=2492.4 ticks a1=0.032 ppb sigma=7.8 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169499 crystal_err=+29928 ns interp_err=+83 ns
+[LTSP-GM] PDU #169450 seq=38377 TX_TS=HW (lat=+255396 ns) a1=0.030 ppb sigma=7.8 ns
+[LTSP-GM] PDU #169460 seq=38387 TX_TS=HW (lat=+251808 ns) a1=0.006 ppb sigma=7.4 ns
+[LTSP-GM] PDU #169470 seq=38397 TX_TS=HW (lat=+250620 ns) a1=0.002 ppb sigma=6.9 ns
+[LTSP-GM] TX: 169478 PDUs | HW_TS: 169477/169478 success
+[LTSP-GM] Regression: a0=2492.7 ticks a1=0.022 ppb sigma=7.2 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169529 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #169480 seq=38407 TX_TS=HW (lat=+254400 ns) a1=0.024 ppb sigma=7.1 ns
+[LTSP-GM] PDU #169490 seq=38417 TX_TS=HW (lat=+251040 ns) a1=0.039 ppb sigma=6.9 ns
+[LTSP-GM] PDU #169500 seq=38427 TX_TS=HW (lat=+251796 ns) a1=0.053 ppb sigma=7.0 ns
+[LTSP-GM] TX: 169508 PDUs | HW_TS: 169507/169508 success
+[LTSP-GM] Regression: a0=2492.8 ticks a1=0.048 ppb sigma=6.7 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169559 crystal_err=+29916 ns interp_err=+71 ns
+[LTSP-GM] PDU #169510 seq=38437 TX_TS=HW (lat=+253980 ns) a1=0.049 ppb sigma=6.9 ns
+[LTSP-GM] PDU #169520 seq=38447 TX_TS=HW (lat=+251808 ns) a1=-0.007 ppb sigma=7.4 ns
+[LTSP-GM] PDU #169530 seq=38457 TX_TS=HW (lat=+251004 ns) a1=-0.049 ppb sigma=7.2 ns
+[LTSP-GM] TX: 169538 PDUs | HW_TS: 169537/169538 success
+[LTSP-GM] Regression: a0=2493.2 ticks a1=-0.032 ppb sigma=7.2 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169589 crystal_err=+29928 ns interp_err=+71 ns
+[LTSP-GM] PDU #169540 seq=38467 TX_TS=HW (lat=+257400 ns) a1=-0.033 ppb sigma=7.2 ns
+[LTSP-GM] PDU #169550 seq=38477 TX_TS=HW (lat=+249228 ns) a1=-0.037 ppb sigma=7.2 ns
+[LTSP-GM] PDU #169560 seq=38487 TX_TS=HW (lat=+249828 ns) a1=-0.032 ppb sigma=7.1 ns
+[LTSP-GM] TX: 169568 PDUs | HW_TS: 169567/169568 success
+[LTSP-GM] Regression: a0=2493.1 ticks a1=-0.008 ppb sigma=7.5 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169619 crystal_err=+29916 ns interp_err=+71 ns
+[LTSP-GM] PDU #169570 seq=38497 TX_TS=HW (lat=+255996 ns) a1=0.004 ppb sigma=7.4 ns
+[LTSP-GM] PDU #169580 seq=38507 TX_TS=HW (lat=+250812 ns) a1=0.022 ppb sigma=7.1 ns
+[LTSP-GM] PDU #169590 seq=38517 TX_TS=HW (lat=+252600 ns) a1=0.037 ppb sigma=7.1 ns
+[LTSP-GM] TX: 169598 PDUs | HW_TS: 169597/169598 success
+[LTSP-GM] Regression: a0=2493.1 ticks a1=0.046 ppb sigma=6.6 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169649 crystal_err=+29928 ns interp_err=+83 ns
+[LTSP-GM] PDU #169600 seq=38527 TX_TS=HW (lat=+252972 ns) a1=0.047 ppb sigma=6.7 ns
+[LTSP-GM] PDU #169610 seq=38537 TX_TS=HW (lat=+252036 ns) a1=0.031 ppb sigma=7.5 ns
+[LTSP-GM] PDU #169620 seq=38547 TX_TS=HW (lat=+251208 ns) a1=-0.041 ppb sigma=7.8 ns
+[LTSP-GM] TX: 169628 PDUs | HW_TS: 169627/169628 success
+[LTSP-GM] Regression: a0=2493.1 ticks a1=-0.078 ppb sigma=7.8 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169679 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #169630 seq=38557 TX_TS=HW (lat=+254220 ns) a1=-0.065 ppb sigma=8.0 ns
+[LTSP-GM] PDU #169640 seq=38567 TX_TS=HW (lat=+251844 ns) a1=-0.023 ppb sigma=8.3 ns
+[LTSP-GM] PDU #169650 seq=38577 TX_TS=HW (lat=+251808 ns) a1=0.002 ppb sigma=8.5 ns
+[LTSP-GM] TX: 169658 PDUs | HW_TS: 169657/169658 success
+[LTSP-GM] Regression: a0=2493.2 ticks a1=0.006 ppb sigma=8.7 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169709 crystal_err=+29928 ns interp_err=+83 ns
+[LTSP-GM] PDU #169660 seq=38587 TX_TS=HW (lat=+252624 ns) a1=0.012 ppb sigma=8.7 ns
+[LTSP-GM] PDU #169670 seq=38597 TX_TS=HW (lat=+253008 ns) a1=-0.034 ppb sigma=8.3 ns
+[LTSP-GM] PDU #169680 seq=38607 TX_TS=HW (lat=+251604 ns) a1=0.046 ppb sigma=7.9 ns
+[LTSP-GM] TX: 169688 PDUs | HW_TS: 169687/169688 success
+[LTSP-GM] Regression: a0=2493.5 ticks a1=0.052 ppb sigma=7.0 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169739 crystal_err=+29928 ns interp_err=+71 ns
+[LTSP-GM] PDU #169690 seq=38617 TX_TS=HW (lat=+253380 ns) a1=0.054 ppb sigma=6.9 ns
+[LTSP-GM] PDU #169700 seq=38627 TX_TS=HW (lat=+251208 ns) a1=0.050 ppb sigma=7.3 ns
+[LTSP-GM] PDU #169710 seq=38637 TX_TS=HW (lat=+248616 ns) a1=0.068 ppb sigma=7.1 ns
+[LTSP-GM] TX: 169718 PDUs | HW_TS: 169717/169718 success
+[LTSP-GM] Regression: a0=2493.2 ticks a1=0.069 ppb sigma=7.2 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169769 crystal_err=+29916 ns interp_err=+95 ns
+[LTSP-GM] PDU #169720 seq=38647 TX_TS=HW (lat=+256392 ns) a1=0.078 ppb sigma=7.2 ns
+[LTSP-GM] PDU #169730 seq=38657 TX_TS=HW (lat=+253200 ns) a1=-0.130 ppb sigma=7.5 ns
+[LTSP-GM] PDU #169740 seq=38667 TX_TS=HW (lat=+249204 ns) a1=-0.173 ppb sigma=7.6 ns
+[LTSP-GM] TX: 169748 PDUs | HW_TS: 169747/169748 success
+[LTSP-GM] Regression: a0=2493.3 ticks a1=-0.175 ppb sigma=7.4 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169799 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #169750 seq=38677 TX_TS=HW (lat=+256812 ns) a1=-0.172 ppb sigma=7.3 ns
+[LTSP-GM] PDU #169760 seq=38687 TX_TS=HW (lat=+251388 ns) a1=-0.171 ppb sigma=7.5 ns
+[LTSP-GM] PDU #169770 seq=38697 TX_TS=HW (lat=+250200 ns) a1=-0.122 ppb sigma=8.4 ns
+[LTSP-GM] TX: 169778 PDUs | HW_TS: 169777/169778 success
+[LTSP-GM] Regression: a0=2492.8 ticks a1=-0.101 ppb sigma=8.0 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169829 crystal_err=+29892 ns interp_err=+95 ns
+[LTSP-GM] PDU #169780 seq=38707 TX_TS=HW (lat=+251820 ns) a1=-0.075 ppb sigma=7.7 ns
+[LTSP-GM] PDU #169790 seq=38717 TX_TS=HW (lat=+253032 ns) a1=-0.047 ppb sigma=7.7 ns
+[LTSP-GM] PDU #169800 seq=38727 TX_TS=HW (lat=+249048 ns) a1=-0.020 ppb sigma=8.0 ns
+[LTSP-GM] TX: 169808 PDUs | HW_TS: 169807/169808 success
+[LTSP-GM] Regression: a0=2492.1 ticks a1=0.002 ppb sigma=8.0 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169859 crystal_err=+29904 ns interp_err=+83 ns
+[LTSP-GM] PDU #169810 seq=38737 TX_TS=HW (lat=+252996 ns) a1=0.005 ppb sigma=8.0 ns
+[LTSP-GM] PDU #169820 seq=38747 TX_TS=HW (lat=+252204 ns) a1=0.024 ppb sigma=7.8 ns
+[LTSP-GM] PDU #169830 seq=38757 TX_TS=HW (lat=+248640 ns) a1=-0.027 ppb sigma=7.5 ns
+[LTSP-GM] TX: 169838 PDUs | HW_TS: 169837/169838 success
+[LTSP-GM] Regression: a0=2492.1 ticks a1=-0.014 ppb sigma=7.3 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169889 crystal_err=+29904 ns interp_err=-904 ns
+[LTSP-GM] PDU #169840 seq=38767 TX_TS=HW (lat=+251844 ns) a1=-0.006 ppb sigma=7.5 ns
+[LTSP-GM] PDU #169850 seq=38777 TX_TS=HW (lat=+252012 ns) a1=0.016 ppb sigma=7.6 ns
+[LTSP-GM] PDU #169860 seq=38787 TX_TS=HW (lat=+249396 ns) a1=0.023 ppb sigma=7.4 ns
+[LTSP-GM] TX: 169868 PDUs | HW_TS: 169867/169868 success
+[LTSP-GM] Regression: a0=2491.8 ticks a1=0.052 ppb sigma=7.3 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169919 crystal_err=+29904 ns interp_err=+95 ns
+[LTSP-GM] PDU #169870 seq=38797 TX_TS=HW (lat=+254196 ns) a1=0.044 ppb sigma=7.2 ns
+[LTSP-GM] PDU #169880 seq=38807 TX_TS=HW (lat=+250632 ns) a1=0.024 ppb sigma=7.2 ns
+[LTSP-GM] PDU #169890 seq=38817 TX_TS=HW (lat=+251604 ns) a1=0.003 ppb sigma=7.3 ns
+[LTSP-GM] TX: 169898 PDUs | HW_TS: 169897/169898 success
+[LTSP-GM] Regression: a0=2492.2 ticks a1=0.022 ppb sigma=7.1 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169949 crystal_err=+29904 ns interp_err=+83 ns
+[LTSP-GM] PDU #169900 seq=38827 TX_TS=HW (lat=+253440 ns) a1=0.027 ppb sigma=7.1 ns
+[LTSP-GM] PDU #169910 seq=38837 TX_TS=HW (lat=+250404 ns) a1=0.053 ppb sigma=7.6 ns
+[LTSP-GM] PDU #169920 seq=38847 TX_TS=HW (lat=+252228 ns) a1=0.039 ppb sigma=7.7 ns
+[LTSP-GM] TX: 169928 PDUs | HW_TS: 169927/169928 success
+[LTSP-GM] Regression: a0=2492.7 ticks a1=-0.007 ppb sigma=8.1 ns (valid)
+[Core 0] GPS: Lock=YES PPS=169979 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #169930 seq=38857 TX_TS=HW (lat=+256020 ns) a1=0.007 ppb sigma=8.3 ns
+[LTSP-GM] PDU #169940 seq=38867 TX_TS=HW (lat=+252432 ns) a1=-0.024 ppb sigma=8.0 ns
+[LTSP-GM] PDU #169950 seq=38877 TX_TS=HW (lat=+250428 ns) a1=0.005 ppb sigma=7.8 ns
+[LTSP-GM] TX: 169958 PDUs | HW_TS: 169957/169958 success
+[LTSP-GM] Regression: a0=2493.0 ticks a1=0.008 ppb sigma=7.7 ns (valid)
+[Core 0] GPS: Lock=YES PPS=170009 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #169960 seq=38887 TX_TS=HW (lat=+252648 ns) a1=0.007 ppb sigma=7.7 ns
+[LTSP-GM] PDU #169970 seq=38897 TX_TS=HW (lat=+252228 ns) a1=-0.000 ppb sigma=7.7 ns
+[LTSP-GM] PDU #169980 seq=38907 TX_TS=HW (lat=+251436 ns) a1=0.001 ppb sigma=7.5 ns
+[LTSP-GM] TX: 169988 PDUs | HW_TS: 169987/169988 success
+[LTSP-GM] Regression: a0=2493.0 ticks a1=0.024 ppb sigma=7.2 ns (valid)
+[Core 0] GPS: Lock=YES PPS=170039 crystal_err=+29916 ns interp_err=+83 ns
+[LTSP-GM] PDU #169990 seq=38917 TX_TS=HW (lat=+253224 ns) a1=0.010 ppb sigma=7.2 ns
+[LTSP-GM] PDU #170000 seq=38927 TX_TS=HW (lat=+251196 ns) a1=0.008 ppb sigma=7.0 ns
+[LTSP-GM] PDU #170010 seq=38937 TX_TS=HW (lat=+252420 ns) a1=0.007 ppb sigma=6.1 ns
+[LTSP-GM] TX: 170018 PDUs | HW_TS: 170017/170018 success
+[LTSP-GM] Regression: a0=2492.9 ticks a1=0.028 ppb sigma=6.0 ns (valid)
+[Core 0] GPS: Lock=YES PPS=170069 crystal_err=+29928 ns interp_err=+83 ns
+[LTSP-GM] PDU #170020 seq=38947 TX_TS=HW (lat=+256596 ns) a1=0.029 ppb sigma=6.2 ns
+[LTSP-GM] PDU #170030 seq=38957 TX_TS=HW (lat=+252816 ns) a1=0.010 ppb sigma=7.3 ns
+[LTSP-GM] PDU #170040 seq=38967 TX_TS=HW (lat=+250788 ns) a1=-0.101 ppb sigma=6.4 ns

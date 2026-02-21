@@ -112,11 +112,14 @@ static volatile bool     pps_anchor_valid = false;
 
 // Filtered PPS anchor: exponential filter on gps_now to reject network jitter.
 // The anchor is updated every packet but filtered to smooth out noise.
-#define PPS_ANCHOR_ALPHA 0.05
+#define PPS_ALPHA_INIT   0.2    // Fast initial convergence
+#define PPS_ALPHA_FINAL  0.02   // Low steady-state jitter
+#define PPS_ALPHA_TAU    30.0   // Decay time constant in packets (e^-1 at 30 packets)
 #define ASYMMETRY_CORRECTION_NS 90000  // Empirical: compensates GM TX processing asymmetry
 #define PIO_LOAD_TRIM_TICKS 10         // PIO instruction overhead for pulse scheduling
 static int64_t pps_filtered_clock_ns = 0;
 static bool pps_filter_initialized = false;
+static uint32_t pps_filter_count = 0;  // Packets since filter init
 
 // Stats
 static uint32_t pdu_count = 0;
@@ -312,8 +315,11 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
                 // Both are PIO-derived, so no cross-timebase drift.
                 int64_t predicted = pps_filtered_clock_ns +
                     (int64_t)(elapsed_pio_ns * clock_state.scale_factor);
-                int64_t correction = (int64_t)((gps_now - predicted) * PPS_ANCHOR_ALPHA);
+                double alpha = PPS_ALPHA_FINAL + (PPS_ALPHA_INIT - PPS_ALPHA_FINAL) *
+                    exp(-(double)pps_filter_count / PPS_ALPHA_TAU);
+                int64_t correction = (int64_t)((gps_now - predicted) * alpha);
                 pps_filtered_clock_ns = predicted + correction;
+                pps_filter_count++;
 
                 pps_anchor_counter = hw_counter_at_rx;
                 pps_anchor_clock_ns = pps_filtered_clock_ns;
@@ -458,14 +464,17 @@ void core1_network_entry(void) {
             int64_t d_min = ltsp_min_filter_get_min(&min_filter);
             double drift = drift_reg.result.valid ? drift_reg.result.a1 : 0.0;
             double sigma = drift_reg.result.valid ? drift_reg.result.sigma : 999999.0;
+            double alpha_now = PPS_ALPHA_FINAL + (PPS_ALPHA_INIT - PPS_ALPHA_FINAL) *
+                exp(-(double)pps_filter_count / PPS_ALPHA_TAU);
             printf("# STATS: PDUs=%lu CSV=%lu Gaps=%lu Dups=%lu Skip=%lu "
                    "d_min=%lld ns drift=%.1f ns/s sigma=%.1f ns "
-                   "state=%s clk_err=%+lld ns\n",
+                   "state=%s clk_err=%+lld ns alpha=%.4f\n",
                    pdu_count, csv_line_count, seq_gap_count, seq_dup_count,
                    deferred_skip_count, (long long)d_min,
                    drift, sigma,
                    ltsp_sync_state_name(clock_state.state),
-                   (long long)clock_state.last_clock_error_ns);
+                   (long long)clock_state.last_clock_error_ns,
+                   alpha_now);
             last_stats_time_us = now_us;
         }
 

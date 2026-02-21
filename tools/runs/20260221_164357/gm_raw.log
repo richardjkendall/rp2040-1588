@@ -1,0 +1,5 @@
+[LTSP-GM] PDU #242390 seq=45781 TX_TS=HW (lat=+261216 ns) a1=0.156 ppb sigma=9.2 ns
+[LTSP-GM] TX: 242392 PDUs | HW_TS: 242391/242392 success
+[LTSP-GM] Regression: a0=2479.4 ticks a1=0.165 ppb sigma=8.7 ns (valid)
+[Core 0] GPS: Lock=YES PPS=242457 crystal_err=+29760 ns interp_err=+227 ns
+[LTSP-GM] PDU #242400 seq=45791 TX_TS=HW (lat=+252396 ns) a1=0.168 ppb sigma=8.0 ns

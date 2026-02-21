@@ -1,0 +1,44 @@
+LTSP Integration Test — 20260220_132150
+Duration: 1802s
+GM port: /dev/cu.usbmodem1101
+RX port: /dev/cu.usbmodem21101
+GM lines: 360
+RX lines: 1831
+Phase measurements: 1371
+Phase interval: 1.0s
+Scope sample rate: 100 MSa/s
+
+========================================================================
+ LTSP Test Harness v0.4  |  1802s elapsed
+========================================================================
+ GM  | GPS Lock: YES  PPS: 145710  Crystal: +30348 ns  Interp: -360 ns
+      | Regression: a1=+0.120 ppb  sigma=8.8 ns
+      | TX latency: mean=+251084 ns std=1528 ns min=+248220 ns max=+260808 ns n=180
+------------------------------------------------------------------------
+ RX  | Packets: 1801  Seq gaps: 0  Errors: GM=0 RX=0  State: LOCKED
+      | Drift: +30486.8 ns/s = +30.5 ppm  sigma=33768 ns
+------------------------------------------------------------------------
+ JIT | Detrended: mean=+9569 ns std=3257819976 ns min=-16605174093 ns max=+46861428860 ns n=1801
+      | Offset:    mean=+1225900496 ns std=4666968682 ns min=+0 ns max=+46861490384 ns n=1801
+------------------------------------------------------------------------
+ CLK | One-way delay: mean=-5400083845 ns std=15512890724 ns min=-51502594451 ns max=+120599468 ns n=1801
+      | Sigma: 15512890.7 us  Mean: -5400083.8 us (expected ~constant)
+========================================================================
+ WARN: Jitter sigma = 3257820.0 us (high)
+ PASS: Zero packet loss
+ PASS: GM regression sigma = 8.8 ns
+ PASS: RX crystal = 30.5 ppm
+ PASS: Drift sigma = 33768 ns
+ WARN: One-way delay sigma = 15512890.7 us (unstable — frequency tracking issue?)
+ PASS: Sync state = LOCKED
+========================================================================
+
+
+1PPS Phase (from scope waveform, __main__ @ 100 MSa/s):
+  Measurements: 1371
+  Mean:  -13281 ns = -13.3 us
+  Sigma: 34399 ns = 34.4 us
+  Min:   -103638 ns = -103.6 us
+  Max:   +22605 ns = +22.6 us
+  P-P:   126243 ns = 126.2 us
+  Drift: -37.7 ns/s = -0.038 us/s
