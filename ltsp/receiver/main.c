@@ -120,6 +120,7 @@ static volatile bool     pps_anchor_valid = false;
 static int64_t pps_filtered_clock_ns = 0;
 static bool pps_filter_initialized = false;
 static uint32_t pps_filter_count = 0;  // Packets since filter init
+static bool pps_filter_reseed = false; // Re-seed filter from gps_now after gap
 
 // Stats
 static uint32_t pdu_count = 0;
@@ -229,8 +230,15 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
         seq_dup_count++;
         return;
     }
-    if (seq_result == LTSP_SEQ_GAP) {
-        seq_gap_count++;
+    if (seq_result == LTSP_SEQ_GAP || seq_result == LTSP_SEQ_RESTART) {
+        seq_gap_count += gap_size;
+        // Reset adaptive alpha for fast reconvergence after outage
+        if (pps_filter_initialized) {
+            pps_filter_count = 0;
+            pps_filter_reseed = true;
+            printf("# ALPHA RESET: seq %s=%u, restarting adaptive alpha, reseed PPS\n",
+                   seq_result == LTSP_SEQ_GAP ? "gap" : "restart", gap_size);
+        }
         // Continue processing — don't discard
     }
 
@@ -248,7 +256,13 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
     // --- Deferred timestamp processing ---
     // PDU N contains Prev_Tx_Timestamp = TX time of packet N-1 (GPS ns)
     // We need our stored RX record for packet N-1 to compute delay
-    if (prev_rx.valid && pdu.prev_tx_timestamp != 0) {
+    //
+    // After a sequence gap/restart, prev_rx references a packet from before
+    // the outage — d_total and elapsed_pio_ns span the gap, corrupting all
+    // pipelines. Skip the entire measurement pipeline for the gap packet.
+    bool is_gap_packet = (seq_result == LTSP_SEQ_GAP ||
+                          seq_result == LTSP_SEQ_RESTART);
+    if (prev_rx.valid && pdu.prev_tx_timestamp != 0 && !is_gap_packet) {
         // d_total is wire-to-wire: HW timestamps already captured
         int64_t d_total_ns = prev_rx.t_rx_ns - pdu.prev_tx_timestamp;
 
@@ -291,6 +305,7 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
             // Compute GPS time at this RX moment from known quantities:
             // GPS_TX_prev (exact) + PIO_elapsed (crystal) * scale_factor (correction)
             int64_t elapsed_pio_ns = t_rx_ns - prev_rx.t_rx_ns;
+
             int64_t gps_now = (pdu.prev_tx_timestamp - ASYMMETRY_CORRECTION_NS) +
                 (int64_t)(elapsed_pio_ns * clock_state.scale_factor);
 
@@ -313,12 +328,25 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
                 // PPS anchor: filter gps_now to reject network jitter,
                 // then pair with hw_counter_at_rx.
                 // Both are PIO-derived, so no cross-timebase drift.
-                int64_t predicted = pps_filtered_clock_ns +
-                    (int64_t)(elapsed_pio_ns * clock_state.scale_factor);
-                double alpha = PPS_ALPHA_FINAL + (PPS_ALPHA_INIT - PPS_ALPHA_FINAL) *
-                    exp(-(double)pps_filter_count / PPS_ALPHA_TAU);
-                int64_t correction = (int64_t)((gps_now - predicted) * alpha);
-                pps_filtered_clock_ns = predicted + correction;
+                if (pps_filter_reseed) {
+                    // After a gap, pps_filtered_clock_ns is stale by the
+                    // outage duration but elapsed_pio_ns only covers ~1s
+                    // (gap packet → this packet). Predicting from the stale
+                    // value would create a massive error. Re-seed from
+                    // gps_now — one sample of network jitter, but the
+                    // adaptive alpha (reset to 0.2) will smooth it quickly.
+                    pps_filtered_clock_ns = gps_now;
+                    pps_filter_reseed = false;
+                    printf("# PPS RESEED: clock_ns=%lld from gps_now\n",
+                           (long long)pps_filtered_clock_ns);
+                } else {
+                    int64_t predicted = pps_filtered_clock_ns +
+                        (int64_t)(elapsed_pio_ns * clock_state.scale_factor);
+                    double alpha = PPS_ALPHA_FINAL + (PPS_ALPHA_INIT - PPS_ALPHA_FINAL) *
+                        exp(-(double)pps_filter_count / PPS_ALPHA_TAU);
+                    int64_t correction = (int64_t)((gps_now - predicted) * alpha);
+                    pps_filtered_clock_ns = predicted + correction;
+                }
                 pps_filter_count++;
 
                 pps_anchor_counter = hw_counter_at_rx;

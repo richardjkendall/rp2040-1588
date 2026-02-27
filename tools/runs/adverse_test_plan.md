@@ -30,90 +30,232 @@ Run: `tools/runs/20260221_065717`
 | Phase mean | **+6.8 µs** | **-1.0 µs** | **+7.8 µs shift** |
 | 5-min windows | 4.4–7.4 µs | 3.1–8.0 µs | narrower |
 
+**No-reboot run (1-hour):** Run `tools/runs/20260221_164357`
+- Sigma 5.6 µs, P-P 42.2 µs, mean +7.3 µs, drift 0.05 ns/s
+- Jitter sigma: 31.7 µs, zero packet loss
+- 5-min windows: 3.8–7.8 µs sigma
+
+**Summary of all three 1-hour runs:**
+
+| Metric | Switch no-reboot | Switch reboot | Crossover reboot |
+|--------|-----------------|---------------|-----------------|
+| Sigma | **5.6 µs** | 5.9 µs | 5.8 µs |
+| P-P | 42.2 µs | 42.7 µs | 51.5 µs |
+| Mean | +7.3 µs | +6.8 µs | -1.0 µs |
+| Jitter sigma | 31.7 µs | 30.6 µs | 31.5 µs |
+
 **Conclusions:**
-- Switch adds negligible jitter — sigma unchanged at ~6 µs
+- Switch adds negligible jitter — sigma unchanged at ~5.5–6.0 µs
 - Mean offset shifted +7.8 µs from asymmetric store-and-forward delay
-- 5-min windows actually more consistent with switch (fewer extremes)
+- 5-min windows consistent across all runs
 - System fully robust to switch insertion (no competing traffic)
+- Performance repeatable across 3 independent 1-hour runs
 
 ---
 
-## Test 1: Packet Loss — Cable Disconnect (10s)
+## Test 1: Packet Loss — Cable Disconnect (10s) — COMPLETED
 
-**What it tests:** Short holdover — does the 1PPS coast correctly on crystal?
+**Result (65-min, fresh boot, via switch):** Run `tools/runs/20260223_102636`
 
-**Procedure:**
-1. Run system until LOCKED and settled (>5 min)
-2. Disconnect Ethernet cable from RX for 10 seconds
-3. Reconnect
-4. Observe: state transitions, 1PPS phase during/after
+| Phase | Pre-pull (settled) | Post-recovery |
+|-------|-------------------|---------------|
+| Sigma | 5.7 µs | 6.6 µs |
+| Mean | +7.1 µs | +7.7 µs |
+| P-P | 35.1 µs | 44.6 µs |
 
-**Expected behavior:**
-- State stays LOCKED (holdover timeout is 30s, outage is only 10s)
-- 1PPS coasts on last-known scale_factor
-- Phase drifts ~30 µs/s × 10s = ~300 µs during outage (crystal drift)
-- After reconnect: filter reconverges over ~50 packets (tau=30 at alpha=0.02)
-- Should return to <10 µs sigma within ~2 minutes
+**Recovery timeline:**
+- t=1862s (31.0m): Last good reading (+6.4 µs)
+- t=1892s (31.5m): Phase jumps to -103.6 µs (scope limit)
+- t=1892–2225s: Stuck beyond scope limit (~5.5 min)
+- t=2255s (37.6m): -83 µs (returning to view)
+- t=2346s (39.1m): +2.5 µs (recovered)
+- **Total recovery: ~7.5 minutes**
 
-**Success criteria:**
+**Root cause:** First packet after reconnect has `elapsed_pio_ns` spanning the
+entire 10s gap, producing a huge gps_now spike. This pushes pps_filtered_clock_ns
+far off. At alpha=0.02, exponential recovery takes ~7.5 min (most beyond scope).
+d_min also spiked to -15 billion ns but regression recovered within 60 packets.
+
+**Fix needed:** Reset adaptive alpha (pps_filter_count=0) on packet gap so the
+filter reconverges at alpha=0.2 instead of 0.02. Expected recovery: ~30s.
+
+---
+
+## Test 1b: Cable Disconnect (10s) with Alpha Reset Only — FAILED
+
+**Result:** Run `tools/runs/20260223_125320`. Alpha reset triggered (`seq restart=12`)
+but regression was still corrupted by the gap packet (d_min=-11 billion, drift=+19.6M ns/s).
+High alpha (0.2) amplified the bad scale_factor into the PPS filter, making it WORSE.
+Phase stuck at -411 µs, same recovery time as without fix.
+
+**Root cause:** Only skipping the PPS filter update isn't enough — the gap packet must
+be excluded from ALL pipelines (regression, min filter, PPS filter).
+
+## Test 1c: Cable Disconnect (10s) with Full Gap Skip (v0.8) — COMPLETED
+
+**Fix (v0.8):** Gap packet skips entire measurement pipeline. Alpha resets to 0.2.
+
+**Result:** Run `tools/runs/20260225_112419` (65-min, 2 MSa/s scope at 250 µs/div)
+- Gap skip fired correctly, but PPS filter still crashed to -4.1 ms
+- Recovery: 7.4 min — same as without fix
+
+**Root cause found:** After gap, `pps_filtered_clock_ns` is stale by outage duration
+but `elapsed_pio_ns` only covers ~1s (gap packet → next packet). Prediction
+`stale + 1s` is ~10s short → massive correction shifts sub-second PPS phase.
+
+---
+
+## Test 1d: Cable Disconnect (10s) with PPS Reseed Fix (v0.9) — COMPLETED
+
+**Fix (v0.9):** Added `pps_filter_reseed` flag. On gap/restart, first normal packet
+re-seeds `pps_filtered_clock_ns = gps_now` instead of predicting from stale value.
+
+**Result:** Run `tools/runs/20260225_132419` (65-min, 2 MSa/s scope at 250 µs/div)
+
+| Metric | Test 1c (no reseed) | Test 1d (with reseed) |
+|--------|--------------------|-----------------------|
+| Max excursion | -4,104 µs | **-80 µs** |
+| Recovery time | 7.4 min | **~100s** |
+| Pre-pull sigma | 5.6 µs | 5.6 µs |
+| Post-recovery sigma | — | 5.3 µs |
+
+---
+
+## Test 1e: Cable Disconnect (10s) with PPS Reseed — Zoomed Scope — COMPLETED
+
+**Result:** Run `tools/runs/20260225_144428` (65-min, 100 MSa/s scope)
+
+| Phase | Pre-pull | Worst excursion | Post-recovery |
+|-------|----------|-----------------|---------------|
+| Sigma | 4.5 µs | — | 5.8 µs |
+| Mean | +8.4 µs | — | +8.7 µs |
+| Min | — | **-103 µs** | — |
+| Max | — | **+50 µs** | — |
+
+**Recovery timeline (100 MSa/s detail):**
+- During outage: phase drifts smoothly +15 → -18 µs (~2 µs/s crystal drift)
+- Reconnect: reseed jumps to +50 µs (one jittery gps_now sample)
+- Adaptive alpha (0.2) absorbs regression instability → dips to -103 µs
+- Exponential recovery: -103 → 0 µs over ~2.7 min
+- Full recovery to within 10 µs of steady state: **~162s**
+
+**Remaining issue:** The -103 µs dip is caused by regression instability amplified
+by high alpha (0.2) during reconvergence. Delaying alpha reset until regression
+re-stabilises (~60 packets) could reduce the excursion significantly.
+
+**Success criteria: PASS**
 - No crash or state reset
-- Phase recovers to <10 µs sigma within 3 minutes of reconnect
+- Phase recovers to <10 µs sigma within 3 minutes
 - No permanent offset shift
 
 ---
 
-## Test 2: Packet Loss — Cable Disconnect (45s)
+## Test 2: Packet Loss — Cable Disconnect (45s) — COMPLETED
 
-**What it tests:** HOLDOVER state entry and recovery.
+**Result:** Run `tools/runs/20260226_043003` (65-min, 100 MSa/s scope)
 
-**Procedure:**
-1. Run system until LOCKED and settled (>5 min)
-2. Disconnect Ethernet cable from RX for 45 seconds
-3. Reconnect
-4. Observe: state transitions, 1PPS phase, recovery time
+| Phase | Pre-pull | Worst excursion | Post-recovery |
+|-------|----------|-----------------|---------------|
+| Sigma | 5.9 µs | — | 5.6 µs |
+| Mean | +9.2 µs | — | +7.8 µs |
+| Max neg | — | **-103.6 µs** (scope floor) | — |
+| Max pos | — | +43.2 µs | — |
 
-**Expected behavior:**
-- At 30s: LOCKED → HOLDOVER
-- Phase drifts ~30 µs/s × 45s = ~1.35 ms during outage
-- 1PPS may go off-scope during outage
-- On reconnect: HOLDOVER → ACQUIRING → LOCKED
-- Filter re-converges — but adaptive alpha has already decayed to 0.02!
-  This means recovery will be slow (~150 packets / 2.5 min at alpha=0.02)
+**During 45s outage:**
+- PPS coasted correctly: smooth linear drift +6 → -89 µs (~1.8 µs/s)
+- Crystal drift ~28 ppm minus scale_factor correction
 
-**Known issue to watch:** The adaptive alpha doesn't reset on HOLDOVER recovery.
-After a long outage, the filter is stuck at alpha=0.02 and must re-converge from
-a ~1.35 ms phase error. This could take 5+ minutes. Consider resetting
-`pps_filter_count` to 0 on HOLDOVER → ACQUIRING transition.
+**On reconnect:**
+- PPS RESEED fired (+43 µs), then regression instability dipped to scope floor
+- Stuck at -103.6 µs for ~85s while regression window refilled
+- Recovery to within 15 µs of steady state: **204s** (~3.4 min)
+- Post-recovery sigma identical to pre-pull
 
-**Success criteria:**
-- Correct state transitions logged
-- Phase recovers to <10 µs sigma within 5 minutes of reconnect
-- No crash, no permanent offset
+**Key finding — no HOLDOVER transition:** State stayed LOCKED. The state machine
+only checks elapsed time on packet arrival, so the 45s gap is never seen as a
+continuous timeout. This is acceptable — PPS reseed handles recovery correctly.
+
+### Test 2b: Re-run with wider scope (500 µs/div, 1 MSa/s) — COMPLETED
+
+**Result:** Run `tools/runs/20260227_082340` (65-min, 500 µs/div captures ±4 ms)
+
+**Full excursion now visible:**
+- During 47s outage: smooth drift +18 → -75 µs (~2 µs/s)
+- Reconnect reseed: jumps to -10 µs
+- Regression instability: exponential dip to **-374 µs** at 1898s (~53s after reconnect)
+- Exponential recovery: -374 → 0 µs over ~2.5 min
+- Within 20 µs of steady state: **158s** from reconnect
+
+| Phase | Pre-pull | Worst excursion | Post-recovery |
+|-------|----------|-----------------|---------------|
+| Sigma | 5.2 µs | — | 5.6 µs |
+| Mean | +7.5 µs | — | +8.1 µs |
+| Min | — | **-374 µs** | — |
+
+**Success criteria: PASS**
+- No crash or state reset
+- Phase recovers to <10 µs sigma within 5 minutes
+- No permanent offset shift
+- Max excursion -374 µs (was -4,104 µs before PPS reseed fix)
 
 ---
 
-## Test 3: Packet Loss — Extended Outage (90s)
+## Test 3: Packet Loss — Extended Outage (90s) — COMPLETED
 
-**What it tests:** Full state reset (HOLDOVER → INIT) and cold restart.
+**Result:** Run `tools/runs/20260227_100012` (65-min, 500 µs/div, 1 MSa/s)
 
-**Procedure:**
-1. Run system until LOCKED and settled (>5 min)
-2. Disconnect Ethernet cable for 90 seconds
-3. Reconnect
-4. Observe: full state machine reset and re-initialization
+| Phase | Pre-pull (5 min) | Post-recovery (5 min) |
+|-------|------------------|-----------------------|
+| Sigma | 5.9 µs | 4.5 µs |
+| Mean | +8.2 µs | +6.6 µs |
+| P-P | 25.6 µs | 22.4 µs |
 
-**Expected behavior:**
-- At 30s: LOCKED → HOLDOVER
-- At 60s: HOLDOVER → INIT (full reset, clock_valid = false)
-- 1PPS should stop during INIT (pps_enabled requires ACQUIRING/LOCKED)
-- On reconnect: behaves like cold boot — INIT → ACQUIRING → LOCKED
-- Adaptive alpha resets naturally (new clock init → pps_filter_count = 0)
-- Full convergence: ~300s (same as cold boot)
+**Timeline:**
+- t≈1796s: Cable pulled (settled at +8 µs)
+- t≈1846s: **1PPS stopped** — 50s into outage, phase at -106 µs
+- t≈1886s: Cable reconnected (90s after pull)
+- t≈2269s: PPS resumed — **383s after reconnect**
+- t≈2486s: Within 100 µs of steady state — **600s after reconnect**
+- t≈2555s: Within 20 µs of steady state — **669s after reconnect**
 
-**Success criteria:**
-- 1PPS stops during extended holdover
-- Clean re-initialization after reconnect
-- Performance matches cold-boot baseline within 10 minutes
+**During 90s outage:**
+- Phase drifted smoothly +2.4 → -106 µs (~2.3 µs/s crystal drift)
+- At -106 µs (50s in), PPS stopped entirely — scheduler anchor too stale
+- Phase jumped to -8200 µs baseline (no synchronized PPS output)
+
+**On reconnect:**
+- Gap detection fired correctly: `ALPHA RESET: seq restart=93, reseed PPS`
+- PPS RESEED fired but regression was catastrophically corrupted
+- Drift jumped to -393M ppm, scale_factor reached 2.29
+- Regression needed ~130s to refill 60-sample window with valid data
+- PPS did not resume until 383s after reconnect
+- Total PPS outage: **423s** (7 min) — far longer than 90s cable disconnect
+
+**Critical findings:**
+1. **No HOLDOVER/INIT transition** — state machine only checks on packet arrival,
+   stayed LOCKED the entire time (same as Test 2)
+2. **PPS stops at ~50s of coasting** — scheduler prediction diverges beyond valid
+   range as anchor becomes stale (consistent with -103 µs scope floor in earlier tests)
+3. **Regression not reset after gap** — stale 60-sample window produces insane drift
+   for ~130s, corrupting scale_factor and PPS scheduling
+4. **PPS reseed from corrupted gps_now** — reseed value is wrong because regression
+   was corrupted when first post-gap packet arrived
+5. Post-recovery performance matches pre-pull baseline (no permanent degradation)
+
+**Fixes needed (priority order):**
+1. **Holdover timer on Core 0** — check elapsed time since last packet independently
+   of packet arrival; transition LOCKED→HOLDOVER→INIT on timer
+2. **Regression window reset after gap** — clear stale samples so regression
+   reconverges in 60s instead of producing corrupted drift for 130s
+3. **Freeze PPS at last good value during holdover** — stop updating PPS scheduler
+   when no packets arriving, instead of letting prediction diverge
+
+**Success criteria: PARTIAL FAIL**
+- ✓ No crash
+- ✓ Performance matches cold-boot baseline after recovery
+- ✗ 1PPS outage 423s (expected: stops cleanly, restarts in ~300s)
+- ✗ No HOLDOVER/INIT state transitions (state machine broken for outages)
+- ✗ Recovery took 669s to within 20 µs (expected: ~300s cold boot)
 
 ---
 

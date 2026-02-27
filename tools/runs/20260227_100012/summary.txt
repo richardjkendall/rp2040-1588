@@ -1,0 +1,45 @@
+LTSP Integration Test — 20260227_100012
+Duration: 3904s
+GM port: /dev/cu.usbmodem1101
+RX port: /dev/cu.usbmodem21101
+GM lines: 784
+RX lines: 3884
+Phase measurements: 2841
+Phase interval: 1.0s
+Scope sample rate: 1 MSa/s
+
+========================================================================
+ LTSP Test Harness v0.4  |  3904s elapsed
+========================================================================
+ GM  | GPS Lock: YES  PPS: 55639  Crystal: +30468 ns  Interp: +519 ns
+      | Regression: a1=+0.042 ppb  sigma=9.3 ns
+      | TX latency: mean=+251146 ns std=1450 ns min=+247620 ns max=+255816 ns n=391
+------------------------------------------------------------------------
+ RX  | Packets: 3810  Seq gaps: 1  Errors: GM=0 RX=0  State: LOCKED
+      | Drift: -29690.3 ns/s = -29.7 ppm  sigma=34986 ns
+------------------------------------------------------------------------
+ JIT | Detrended: mean=-4602 ns std=2292316266 ns min=-48190575336 ns max=+16617371326 ns n=3751
+      | Offset:    mean=+1541758092 ns std=8785878996 ns min=+0 ns max=+64807946662 ns n=3751
+------------------------------------------------------------------------
+ CLK | One-way delay: mean=+31697239161 ns std=29609721091 ns min=-695090 ns max=+59724480078 ns n=3750
+      | Sigma: 29609721.1 us  Mean: +31697239.2 us (expected ~constant)
+========================================================================
+ WARN: Jitter sigma = 2292316.3 us (high)
+ WARN: 1 sequence gaps
+ PASS: GM regression sigma = 9.3 ns
+ PASS: RX crystal = 29.7 ppm
+ PASS: Drift sigma = 34986 ns
+ WARN: One-way delay sigma = 29609721.1 us (unstable — frequency tracking issue?)
+ PASS: Sync state = LOCKED
+========================================================================
+
+
+1PPS Phase (from scope waveform, __main__ @ 1 MSa/s):
+  Measurements: 2841
+  Mean:  -1075692 ns = -1075.7 us
+  Sigma: 2708537 ns = 2708.5 us
+  Min:   -8207338 ns = -8207.3 us
+  Max:   +402385 ns = +402.4 us
+  P-P:   8609723 ns = 8609.7 us
+  Drift: +92.8 ns/s = +0.093 us/s
+  No-edge: 6

@@ -1,0 +1,45 @@
+LTSP Integration Test — 20260223_102636
+Duration: 3904s
+GM port: /dev/cu.usbmodem1101
+RX port: /dev/cu.usbmodem21101
+GM lines: 780
+RX lines: 3962
+Phase measurements: 2959
+Phase interval: 1.0s
+Scope sample rate: 100 MSa/s
+
+========================================================================
+ LTSP Test Harness v0.4  |  3904s elapsed
+========================================================================
+ GM  | GPS Lock: YES  PPS: 396502  Crystal: +31044 ns  Interp: -44 ns
+      | Regression: a1=+0.100 ppb  sigma=7.4 ns
+      | TX latency: mean=+252605 ns std=1874 ns min=+247800 ns max=+259200 ns n=390
+------------------------------------------------------------------------
+ RX  | Packets: 3888  Seq gaps: 1  Errors: GM=0 RX=0  State: LOCKED
+      | Drift: -28943.5 ns/s = -28.9 ppm  sigma=34502 ns
+------------------------------------------------------------------------
+ JIT | Detrended: mean=-4560 ns std=250064456 ns min=-14960414353 ns max=+1013884872 ns n=3829
+      | Offset:    mean=+468941337 ns std=2618908426 ns min=+0 ns max=+15974299225 ns n=3829
+------------------------------------------------------------------------
+ CLK | One-way delay: mean=+335927097 ns std=380958636 ns min=-15892771375 ns max=+932001620 ns n=3828
+      | Sigma: 380958.6 us  Mean: +335927.1 us (expected ~constant)
+========================================================================
+ WARN: Jitter sigma = 250064.5 us (high)
+ WARN: 1 sequence gaps
+ PASS: GM regression sigma = 7.4 ns
+ PASS: RX crystal = 28.9 ppm
+ PASS: Drift sigma = 34502 ns
+ WARN: One-way delay sigma = 380958.6 us (unstable — frequency tracking issue?)
+ PASS: Sync state = LOCKED
+========================================================================
+
+
+1PPS Phase (from scope waveform, __main__ @ 100 MSa/s):
+  Measurements: 2959
+  Mean:  -6368 ns = -6.4 us
+  Sigma: 38261 ns = 38.3 us
+  Min:   -103637 ns = -103.6 us
+  Max:   +97049 ns = +97.0 us
+  P-P:   200686 ns = 200.7 us
+  Drift: +2.9 ns/s = +0.003 us/s
+  No-edge: 6
