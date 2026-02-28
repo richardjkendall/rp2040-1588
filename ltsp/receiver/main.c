@@ -239,6 +239,15 @@ static void process_ltsp_pdu(const uint8_t *pdu_payload, uint32_t hw_counter_at_
             printf("# ALPHA RESET: seq %s=%u, restarting adaptive alpha, reseed PPS\n",
                    seq_result == LTSP_SEQ_GAP ? "gap" : "restart", gap_size);
         }
+
+        // Reset measurement pipelines — stale regression/min filter
+        // data from before the outage would corrupt drift for ~130s
+        ltsp_regression_init(&drift_reg, drift_reg_buf, LTSP_REGRESSION_DEFAULT_WINDOW);
+        ltsp_min_filter_reset(&min_filter);
+        drift_sample_count = 0;
+        d_total_ref_set = false;
+        clock_initialized = false;
+        printf("# PIPELINE RESET: regression, min filter, sample counter, clock\n");
         // Continue processing — don't discard
     }
 
@@ -566,6 +575,18 @@ int main() {
     while (true) {
         drain_hw_timestamp_fifo();
 
+        // Check holdover timeout independently of packet arrival.
+        // Core 1 only calls update_state with has_packet=true; this ensures
+        // the LOCKED->HOLDOVER transition fires after 30s of silence.
+        // Skip INIT state: its !has_packet handler resets valid_packet_count,
+        // which would prevent Core 1 from ever reaching the 3-packet threshold.
+        if (clock_state.state == LTSP_SYNC_LOCKED ||
+            clock_state.state == LTSP_SYNC_ACQUIRING ||
+            clock_state.state == LTSP_SYNC_HOLDOVER) {
+            ltsp_clock_update_state(&clock_state, false, false,
+                                    clock_state.last_clock_error_ns);
+        }
+
         // Enable 1PPS when clock is LOCKED (or ACQUIRING with valid clock)
         if (!pps_enabled && clock_state.clock_valid &&
             (clock_state.state == LTSP_SYNC_LOCKED ||
@@ -595,6 +616,20 @@ int main() {
 
             // Elapsed PIO ticks since anchor (unsigned subtraction handles wrap)
             uint32_t elapsed_ticks = anchor_ctr - counter_now;
+
+            // Holdover re-anchor: the 32-bit PIO counter wraps every ~51.5s.
+            // If no packets arrive (holdover), re-anchor from Core 0 every ~40s
+            // to keep PPS coasting on the last known scale_factor.
+            if (elapsed_ticks > 3333333333U) {  // ~40s at 83.33 MHz
+                double elapsed_gps_ns_reanchor = (double)elapsed_ticks * 12.0 * anchor_sf;
+                pps_anchor_clock_ns = anchor_ns + (int64_t)elapsed_gps_ns_reanchor;
+                pps_anchor_counter = counter_now;
+                // Re-read after updating
+                anchor_ns = pps_anchor_clock_ns;
+                anchor_ctr = pps_anchor_counter;
+                elapsed_ticks = 0;
+                printf("# 1PPS: Re-anchor (holdover coast, sf=%.9f)\n", anchor_sf);
+            }
 
             // GPS time now, derived entirely from PIO domain
             double elapsed_gps_ns = (double)elapsed_ticks * 12.0 * anchor_sf;

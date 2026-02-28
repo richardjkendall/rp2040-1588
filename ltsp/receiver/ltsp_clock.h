@@ -37,7 +37,7 @@ typedef struct {
 #define LTSP_INIT_PACKETS_REQUIRED     3       /* Valid packets before ACQUIRING */
 #define LTSP_LOCK_THRESHOLD_NS         500000  /* 500 µs — clock error for lock */
 #define LTSP_LOCK_SAMPLES_REQUIRED     5       /* Consecutive low-error for LOCKED */
-#define LTSP_HOLDOVER_TIMEOUT_US       30000000ULL  /* 30 seconds */
+#define LTSP_HOLDOVER_TIMEOUT_US       300000000ULL /* 5 minutes */
 #define LTSP_PHASE_STEP_THRESHOLD_NS   1000000 /* 1 ms — jump rather than slew */
 
 /**
