@@ -425,8 +425,8 @@ def main():
                     phase_file.flush()
                     last_phase_write = new_count
 
-            # Dashboard every 5s
-            time.sleep(5)
+            # Dashboard every 1s
+            time.sleep(1)
             elapsed = time.time() - start_time
 
             eprint('\033[2J\033[H', end='')
