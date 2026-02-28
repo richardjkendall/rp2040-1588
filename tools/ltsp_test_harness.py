@@ -180,8 +180,9 @@ class RunningStats:
 # ---------------------------------------------------------------------------
 
 class TestHarness:
-    def __init__(self):
+    def __init__(self, quiet=False):
         self.lock = threading.Lock()
+        self.quiet = quiet  # suppress stdout CSV output
 
         # Received samples (ring buffers for recent history)
         self.gm_samples = deque(maxlen=1000)
@@ -248,13 +249,14 @@ class TestHarness:
             self.last_drift_sigma_ns = s.drift_sigma_ns
             self.last_sync_state = s.sync_state
 
-            # Emit CSV to stdout
-            print(f"{s.seq},{s.timestamp - self.start_time:.3f},"
-                  f"{s.d_total_ns},{s.d_detrended_ns},{s.offset_ns},"
-                  f"{s.drift_ns_per_s:.1f},{s.drift_sigma_ns:.1f},"
-                  f"{s.gm_sigma_ns:.1f},{s.gm_a1_ppb:.3f},"
-                  f"{s.clock_error_ns},{s.sync_state}",
-                  flush=True)
+            # Emit CSV to stdout (standalone mode only)
+            if not self.quiet:
+                print(f"{s.seq},{s.timestamp - self.start_time:.3f},"
+                      f"{s.d_total_ns},{s.d_detrended_ns},{s.offset_ns},"
+                      f"{s.drift_ns_per_s:.1f},{s.drift_sigma_ns:.1f},"
+                      f"{s.gm_sigma_ns:.1f},{s.gm_a1_ppb:.3f},"
+                      f"{s.clock_error_ns},{s.sync_state}",
+                      flush=True)
 
     def dashboard(self):
         """Return a multi-line dashboard string."""

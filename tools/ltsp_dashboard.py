@@ -149,24 +149,10 @@ def _hline_title(width, left, right, title, fill=BOX_H):
 
 
 def _pad_line(text, width):
-    """Pad or truncate text to exactly width chars (between box borders)."""
+    """Pad or truncate text to exactly width chars (full-width row)."""
     inner = width - 2  # space between │ and │
     text = text[:inner]
     return BOX_V + text.ljust(inner) + BOX_V
-
-
-def _pad_left(text, lw):
-    """Pad text for left panel (no right border)."""
-    inner = lw - 1  # space after │
-    text = text[:inner]
-    return BOX_V + text.ljust(inner)
-
-
-def _pad_right(text, rw):
-    """Pad text for right panel (no left border)."""
-    inner = rw - 1  # space before │
-    text = text[:inner]
-    return text.ljust(inner) + BOX_V
 
 
 # ---------------------------------------------------------------------------
@@ -340,37 +326,40 @@ def render_dashboard(harness, phase_measurer, gm_lines, rx_lines,
 def _render_two_column(harness, phase_measurer, gm_lines, rx_lines,
                        elapsed, duration, gm_line_count, rx_line_count,
                        run_dir, total_w):
-    """Render two-column layout with box drawing."""
-    lw = total_w // 2
-    rw = total_w - lw
+    """Render two-column layout with box drawing.
+
+    Width accounting: total_w = 1(│) + lcw + 1(│) + rcw + 1(│) = lcw + rcw + 3
+    Every line is exactly total_w characters.
+    """
+    # Content widths (excluding all three vertical border chars)
+    lcw = (total_w - 3) // 2
+    rcw = total_w - 3 - lcw
+
+    def row(left, mid, right, ltext="", rtext=""):
+        """Build a row of exactly total_w characters."""
+        return left + ltext.ljust(lcw)[:lcw] + mid + rtext.ljust(rcw)[:rcw] + right
 
     out = []
 
     # Top border with titles
-    left_top = BOX_TL + _center_title("Stats", lw - 2) + BOX_TT
-    right_top = _center_title("Raw Data", rw - 2) + BOX_TR
-    out.append(left_top + right_top)
+    out.append(BOX_TL + _center_title("Stats", lcw) + BOX_TT
+               + _center_title("Raw Data", rcw) + BOX_TR)
 
     # Header line
     title = " LTSP Test Harness v0.5"
     elapsed_str = f"{elapsed:.0f}s elapsed "
-    inner_lw = lw - 2  # content width inside left panel
-    gap = inner_lw - len(title) - len(elapsed_str)
+    gap = lcw - len(title) - len(elapsed_str)
     header_left = title + " " * max(gap, 1) + elapsed_str
-    out.append(_pad_left(header_left, lw) + BOX_V + _pad_right("", rw))
+    out.append(row(BOX_V, BOX_V, BOX_V, header_left, ""))
 
     # Divider under header
-    out.append(BOX_LT + BOX_H * (lw - 2) + BOX_CROSS + BOX_H * (rw - 2) + BOX_RT)
+    out.append(row(BOX_LT, BOX_CROSS, BOX_RT, BOX_H * lcw, BOX_H * rcw))
 
     # Build content for both panels
     left_content = _build_left_lines(harness, phase_measurer, elapsed, duration)
     right_content = _build_right_lines(gm_lines, rx_lines)
 
-    # Determine how many right-panel lines we can show
-    # (fill to match left panel height)
     max_rows = max(len(left_content), len(right_content))
-
-    # Pad both to same length
     while len(left_content) < max_rows:
         left_content.append("")
     while len(right_content) < max_rows:
@@ -381,23 +370,18 @@ def _render_two_column(harness, phase_measurer, gm_lines, rx_lines,
         rc = right_content[i]
 
         if lc is None and rc is None:
-            # Both separators
-            out.append(BOX_LT + BOX_H * (lw - 2) + BOX_CROSS + BOX_H * (rw - 2) + BOX_RT)
+            out.append(row(BOX_LT, BOX_CROSS, BOX_RT, BOX_H * lcw, BOX_H * rcw))
         elif lc is None:
-            # Left separator, right content continues
-            rc_inner = _trunc(rc, rw - 2).ljust(rw - 2)
-            out.append(BOX_LT + BOX_H * (lw - 2) + BOX_RT + rc_inner + BOX_V)
+            out.append(row(BOX_LT, BOX_RT, BOX_V, BOX_H * lcw, _trunc(rc, rcw)))
         elif rc is None:
-            # Left content continues, right separator
-            lc_inner = _trunc(lc, lw - 2).ljust(lw - 2)
-            out.append(BOX_V + lc_inner + BOX_LT + BOX_H * (rw - 2) + BOX_RT)
+            out.append(row(BOX_V, BOX_LT, BOX_RT, _trunc(lc, lcw), BOX_H * rcw))
         else:
-            out.append(_pad_left(lc, lw) + BOX_V + _pad_right(rc, rw))
+            out.append(row(BOX_V, BOX_V, BOX_V, _trunc(lc, lcw), _trunc(rc, rcw)))
 
     # Footer divider (merge columns)
-    out.append(BOX_LT + BOX_H * (lw - 2) + BOX_BT + BOX_H * (rw - 2) + BOX_RT)
+    out.append(row(BOX_LT, BOX_BT, BOX_RT, BOX_H * lcw, BOX_H * rcw))
 
-    # Status bar
+    # Status bar (full width)
     short_dir = _short_path(run_dir)
     status = (f" [{elapsed:.0f}s / {duration}s]  "
               f"GM: {gm_line_count} lines  "

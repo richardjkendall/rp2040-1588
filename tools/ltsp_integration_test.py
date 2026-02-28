@@ -377,8 +377,8 @@ def main():
     phase_file.write("# elapsed_s,phase_ns\n")
     phase_file.flush()
 
-    # Test harness
-    harness = TestHarness()
+    # Test harness (quiet=True: CSV written by make_rx_parser, not stdout)
+    harness = TestHarness(quiet=True)
 
     # Start serial captures
     gm_capture = SerialCapture(
