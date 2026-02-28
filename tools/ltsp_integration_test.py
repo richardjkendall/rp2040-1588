@@ -38,9 +38,11 @@ from datetime import datetime
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS_DIR)
 
+from collections import deque
 from ltsp_test_harness import (
     TestHarness, parse_gm_line, parse_gm_stats, parse_rx_csv, eprint
 )
+from ltsp_dashboard import render_dashboard
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -236,6 +238,7 @@ class SerialCapture:
         self.harness = harness
         self.parse_fn = parse_fn
         self.line_count = 0
+        self.recent_lines = deque(maxlen=50)
         self.running = True
         self.connected = False
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -263,6 +266,7 @@ class SerialCapture:
                     if not line:
                         continue
                     self.line_count += 1
+                    self.recent_lines.append(line)
                     self.raw_file.write(line + '\n')
                     self.raw_file.flush()
                     self.parse_fn(line)
@@ -426,35 +430,14 @@ def main():
             elapsed = time.time() - start_time
 
             eprint('\033[2J\033[H', end='')
-            eprint(harness.dashboard())
-
-            # Phase summary in dashboard
-            if phase_measurer:
-                meas, mean_ns, sigma_ns, min_ns, max_ns = phase_measurer.get_stats()
-                n = len(meas)
-                if n > 0:
-                    eprint(f"\n PHASE | n={n}  "
-                           f"mean={mean_ns/1000:+.1f} us  "
-                           f"sigma={sigma_ns/1000:.1f} us  "
-                           f"min={min_ns/1000:+.1f} us  "
-                           f"max={max_ns/1000:+.1f} us  "
-                           f"P-P={((max_ns-min_ns)/1000):.1f} us")
-                    if phase_measurer.no_edge_count > 0:
-                        eprint(f"        | No-edge: {phase_measurer.no_edge_count}  "
-                               f"Errors: {phase_measurer.errors}")
-                    # Show last 5 measurements
-                    recent = meas[-5:]
-                    recent_str = "  ".join(f"{ph/1000:+.1f}" for _, ph in recent)
-                    eprint(f"        | Recent (us): {recent_str}")
-                else:
-                    eprint(f"\n PHASE | No measurements yet "
-                           f"(no-edge: {phase_measurer.no_edge_count}, "
-                           f"errors: {phase_measurer.errors})")
-
-            eprint(f"\n [{elapsed:.0f}s / {args.duration}s]  "
-                   f"GM: {gm_capture.line_count} lines  "
-                   f"RX: {rx_capture.line_count} lines")
-            eprint(f" Output: {run_dir}")
+            eprint(render_dashboard(
+                harness, phase_measurer,
+                list(gm_capture.recent_lines),
+                list(rx_capture.recent_lines),
+                elapsed, args.duration,
+                gm_capture.line_count, rx_capture.line_count,
+                run_dir,
+            ))
 
     except KeyboardInterrupt:
         eprint("\n\nStopped by user.")

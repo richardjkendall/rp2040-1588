@@ -301,18 +301,6 @@ class TestHarness:
                 lines.append(f" JIT | Waiting for drift regression to converge "
                              f"(~60 samples)...")
 
-            lines.append(f"{'-'*72}")
-
-            # Clock one-way delay (monitoring)
-            if self.clock_error_stats.n > 0:
-                lines.append(f" CLK | One-way delay: {self.clock_error_stats.summary(' ns')}")
-                clk_sigma_us = self.clock_error_stats.std / 1000.0
-                clk_mean_us = self.clock_error_stats.mean / 1000.0
-                lines.append(f"      | Sigma: {clk_sigma_us:.1f} us  "
-                             f"Mean: {clk_mean_us:+.1f} us (expected ~constant)")
-            else:
-                lines.append(f" CLK | Clock not yet initialized")
-
             # Verdicts
             lines.append(f"{'='*72}")
             verdicts = []
@@ -342,16 +330,6 @@ class TestHarness:
                     verdicts.append(f"PASS: Drift sigma = {sigma_ns:.0f} ns")
                 else:
                     verdicts.append(f"WARN: Drift sigma = {sigma_ns:.0f} ns (high)")
-
-                # Clock stability verdict (one-way delay should be ~constant)
-                if self.clock_error_stats.n >= 10:
-                    clk_sigma_us = self.clock_error_stats.std / 1000.0
-                    if clk_sigma_us < 100:
-                        verdicts.append(f"PASS: One-way delay sigma = {clk_sigma_us:.1f} us "
-                                       f"(stable)")
-                    else:
-                        verdicts.append(f"WARN: One-way delay sigma = {clk_sigma_us:.1f} us "
-                                       f"(unstable — frequency tracking issue?)")
 
                 if self.last_sync_state == "LOCKED":
                     verdicts.append("PASS: Sync state = LOCKED")
