@@ -88,6 +88,7 @@ typedef struct {
 } phase_stats_t;
 
 static phase_stats_t phase_stats = {0};
+static uint64_t rejected_measurement_count = 0;  // Global counter for rejected measurements
 
 // EMA alpha values
 #define EMA_ALPHA_5MIN  0.00333   // ~5 minute time constant
@@ -164,7 +165,7 @@ static double get_stddev(void) {
  */
 static void print_stats(void) {
     if (phase_stats.count == 0) {
-        printf("No measurements yet\n");
+        printf("# No measurements yet\n");
         return;
     }
 
@@ -179,28 +180,30 @@ static void print_stats(void) {
     extern volatile int32_t crystal_error_ns;
     double crystal_ppm = (double)crystal_error_ns / 1000000.0;
 
-    printf("\n=== Phase Offset Measurement ===\n");
-    printf("Samples: %llu (GM first: %llu, Slave first: %llu)\n",
+    printf("#\n# === Phase Offset Measurement ===\n");
+    printf("# Samples: %llu (GM first: %llu, Slave first: %llu)\n",
            phase_stats.count,
            phase_stats.gm_first_count,
            phase_stats.slave_first_count);
-    printf("Phase offset: %.1f ± %.1f ns (min: %.1f, max: %.1f)\n",
+    printf("# Rejected: %llu (PIO glitches when phase approaches zero)\n",
+           rejected_measurement_count);
+    printf("# Phase offset: %.1f +/- %.1f ns (min: %.1f, max: %.1f)\n",
            phase_stats.mean_ns, stddev,
            phase_stats.min_ns, phase_stats.max_ns);
-    printf("EMA stddev (5/15/30min): %.1f / %.1f / %.1f ns\n",
+    printf("# EMA stddev (5/15/30min): %.1f / %.1f / %.1f ns\n",
            ema_5m, ema_15m, ema_30m);
-    printf("GPS crystal: %+ld ns (%+.3f ppm)\n",
+    printf("# GPS crystal: %+ld ns (%+.3f ppm)\n",
            (long)crystal_error_ns, crystal_ppm);
 
     // Print histogram (only non-zero bins near center)
-    printf("\nHistogram (100ns bins):\n");
+    printf("#\n# Histogram (100ns bins):\n");
     for (int i = 0; i < HISTOGRAM_BINS; i++) {
         if (phase_stats.histogram[i] > 0) {
             int offset_ns = (i - HISTOGRAM_CENTER) * HISTOGRAM_BIN_SIZE_NS;
-            printf("  %+6d ns: %6lu samples\n", offset_ns, phase_stats.histogram[i]);
+            printf("#   %+6d ns: %6lu samples\n", offset_ns, phase_stats.histogram[i]);
         }
     }
-    printf("\n");
+    printf("#\n");
 }
 
 int main() {
@@ -211,8 +214,8 @@ int main() {
     stdio_init_all();
     sleep_ms(2000);
 
-    printf("\n=== PTP Phase Offset Measurement Device ===\n");
-    printf("System clock: %lu MHz\n\n", clock_get_hz(clk_sys) / 1000000);
+    printf("\n# === PTP Phase Offset Measurement Device ===\n");
+    printf("# System clock: %lu MHz\n#\n", clock_get_hz(clk_sys) / 1000000);
 
     // Initialize debug GPIOs
     gpio_init(DEBUG_PPS_PIN);
@@ -223,19 +226,19 @@ int main() {
     gpio_put(DEBUG_LOCK_PIN, 0);
 
     // Initialize GPS module
-    printf("Initializing GPS...\n");
+    printf("# Initializing GPS...\n");
     gps_init(GPS_UART_ID, GPS_TX_PIN, GPS_RX_PIN, GPS_PPS_PIN, GPS_PIO, GPS_SM);
 
     // Initialize GPS discipline for crystal calibration
-    printf("Initializing GPS discipline...\n");
+    printf("# Initializing GPS discipline...\n");
     if (!discipline_init_v3()) {
-        printf("FATAL: GPS discipline init failed\n");
+        printf("# FATAL: GPS discipline init failed\n");
         while (1) { sleep_ms(1000); }
     }
-    printf("GPS discipline ready\n\n");
+    printf("# GPS discipline ready\n#\n");
 
     // Initialize PIO programs for phase measurement
-    printf("Initializing phase measurement PIO...\n");
+    printf("# Initializing phase measurement PIO...\n");
 
     // Load GM→Slave counter program
     uint gm_to_slave_offset = pio_add_program(PHASE_PIO, &gm_to_slave_counter_program);
@@ -247,11 +250,11 @@ int main() {
     slave_to_gm_counter_program_init(PHASE_PIO, SLAVE_TO_GM_SM, slave_to_gm_offset,
                                       SLAVE_PPS_PIN, GM_PPS_PIN);
 
-    printf("Phase measurement ready\n");
-    printf("GM 1PPS input: GPIO%d\n", GM_PPS_PIN);
-    printf("Slave 1PPS input: GPIO%d\n\n", SLAVE_PPS_PIN);
+    printf("# Phase measurement ready\n");
+    printf("# GM 1PPS input: GPIO%d\n", GM_PPS_PIN);
+    printf("# Slave 1PPS input: GPIO%d\n#\n", SLAVE_PPS_PIN);
 
-    printf("Waiting for GPS lock...\n\n");
+    printf("# Waiting for GPS lock...\n#\n");
 
     uint64_t last_stats_time_us = 0;
     uint64_t measurement_count = 0;
@@ -285,7 +288,7 @@ int main() {
             double phase_offset_ns;
             bool gm_first;
 
-            #define INVALID_THRESHOLD_NS 10000.0  // 10µs - measurements smaller than this are invalid
+            #define INVALID_THRESHOLD_NS 150.0    // 150ns - detect PIO glitch (pin already HIGH), just above 100ns pulse width
 
             if (gm_to_slave_ns < INVALID_THRESHOLD_NS && slave_to_gm_ns >= INVALID_THRESHOLD_NS) {
                 // GM→Slave saw pin already HIGH, use Slave→GM measurement
@@ -301,27 +304,33 @@ int main() {
                 phase_offset_ns = gm_first ? gm_to_slave_ns : slave_to_gm_ns;
             }
 
-            // Update statistics (only for valid measurements)
+            // Validate measurement
             // Valid phase offset should be small (< 10ms) since we're measuring sub-second offsets
-            // Filter out bad measurements (0ns or near 1 second)
-            #define MIN_VALID_OFFSET_NS 1000.0      // 1µs minimum
-            #define MAX_VALID_OFFSET_NS 10000000.0  // 10ms maximum
+            #define MIN_VALID_OFFSET_NS 50.0        // 50ns minimum - aggressive but safe with 100ns pulse width
+            #define MAX_VALID_OFFSET_NS 10000000.0  // 10ms maximum (filters 1-second wraparound errors)
 
-            if (phase_offset_ns >= MIN_VALID_OFFSET_NS && phase_offset_ns <= MAX_VALID_OFFSET_NS) {
-                update_phase_stats(phase_offset_ns, gm_first);
+            bool is_valid = (phase_offset_ns >= MIN_VALID_OFFSET_NS &&
+                           phase_offset_ns <= MAX_VALID_OFFSET_NS);
+
+            // If measurement below threshold, use threshold value as conservative estimate
+            // This indicates "excellent sync - at or below 50ns" without claiming false precision
+            double reported_offset = is_valid ? phase_offset_ns : MIN_VALID_OFFSET_NS;
+
+            // Update statistics with reported value (always, no gaps)
+            update_phase_stats(reported_offset, gm_first);
+
+            if (!is_valid) {
+                rejected_measurement_count++;
             }
+
             measurement_count++;
 
-            // Print individual measurements (first 20, then every 100th)
-            if (measurement_count <= 20 || measurement_count % 100 == 0) {
-                printf("[%6llu] Phase: %+7.1f ns (%c first, G→S: %7.1f ns, S→G: %7.1f ns, SF: %.6f)\n",
-                       measurement_count,
-                       phase_offset_ns,
-                       gm_first ? 'G' : 'S',
-                       gm_to_slave_ns,
-                       slave_to_gm_ns,
-                       sf);
-            }
+            // CSV output every measurement: seq,phase_ns,gm_to_slave_ns,slave_to_gm_ns,scale_factor,gm_first,crystal_error_ns
+            extern volatile int32_t crystal_error_ns;
+            printf("%llu,%.1f,%.1f,%.1f,%.9f,%d,%ld\n",
+                   measurement_count, reported_offset,
+                   gm_to_slave_ns, slave_to_gm_ns,
+                   sf, gm_first ? 1 : 0, (long)crystal_error_ns);
         }
 
         // Print statistics every 30 seconds

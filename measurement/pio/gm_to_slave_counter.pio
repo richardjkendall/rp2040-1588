@@ -20,6 +20,7 @@
 .program gm_to_slave_counter
 
 .wrap_target
+    wait 0 gpio 10              ; Ensure GM pin is LOW (prevent re-trigger on same pulse)
     wait 1 gpio 10              ; Wait for GM 1PPS rising edge (GPIO 10)
     mov x, ~null                ; X = 0xFFFFFFFF (count down from max)
     jmp pin done_immediately    ; If Slave already HIGH, count is ~0 (wrong interval)
